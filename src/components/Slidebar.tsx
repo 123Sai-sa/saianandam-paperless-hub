@@ -142,12 +142,23 @@ export const Slidebar: React.FC<SlidebarProps> = ({
     },
   ];
 
-  if (isAdmin) {
+  if (isAdmin || isTeacher) {
     navSections.push({
-      heading: 'GOVERNANCE & SECURITY',
+      heading: isAdmin ? 'GOVERNANCE & SECURITY' : 'IDENTITY & DIRECTORY',
       items: [
-        { tab: 'audit', label: 'Audit Trail Logs', icon: ShieldCheck },
-        { tab: 'settings', label: 'SecOps Settings', icon: Sliders },
+        {
+          tab: 'users',
+          label: 'User & ID Management',
+          icon: Users,
+          badge: 'Staff Only',
+          badgeColor: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40',
+        },
+        ...(isAdmin
+          ? [
+              { tab: 'audit' as NavigationTab, label: 'Audit Trail Logs', icon: ShieldCheck },
+              { tab: 'settings' as NavigationTab, label: 'SecOps Settings', icon: Sliders },
+            ]
+          : []),
       ],
     });
   }

@@ -5,6 +5,7 @@ import { Header } from './components/Header';
 import { Slidebar } from './components/Slidebar';
 import { GdprModal } from './components/GdprModal';
 import { DashboardView } from './components/DashboardView';
+import { UserManagementView } from './components/UserManagementView';
 import { AcademicsView } from './components/AcademicsView';
 import { FeeLedgerView } from './components/FeeLedgerView';
 import { AnnouncementsView } from './components/AnnouncementsView';
@@ -67,8 +68,11 @@ export const App: React.FC = () => {
     if (currentUser) {
       const userTheme = sdbmsApi.getUserThemePreference(currentUser.id);
       setTheme(userTheme);
+      if (activeTab === 'users' && currentUser.role !== 'admin' && currentUser.role !== 'teacher') {
+        setActiveTab('dashboard');
+      }
     }
-  }, [currentUser?.id]);
+  }, [currentUser?.id, currentUser?.role, activeTab]);
 
   const handleToggleTheme = () => {
     const nextTheme = theme === 'dark' ? 'light' : 'dark';
@@ -555,6 +559,16 @@ export const App: React.FC = () => {
                   onDeleteAssessment={handleDeleteAssessment}
                   onSubmitAssessment={handleSubmitAssessment}
                   onGradeSubmission={handleGradeSubmission}
+                />
+              )}
+
+              {activeTab === 'users' && (currentUser.role === 'admin' || currentUser.role === 'teacher') && (
+                <UserManagementView
+                  users={users}
+                  onAddUser={handleAddUser}
+                  onUpdateUser={handleUpdateUser}
+                  onDeleteUser={handleDeleteUser}
+                  onChangeStudentCredentials={handleChangeStudentCredentials}
                 />
               )}
 

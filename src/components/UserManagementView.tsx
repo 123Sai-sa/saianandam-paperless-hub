@@ -25,7 +25,7 @@ import {
   Download,
   FileSpreadsheet,
 } from 'lucide-react';
-import { User, UserRole } from '../types';
+import { User, UserRole, ALL_INSTITUTIONAL_CLASSES } from '../types';
 
 interface UserManagementViewProps {
   users: User[];
@@ -112,7 +112,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
       );
       setTimeout(() => setStatusSuccessMsg(null), 4000);
     } catch (err: any) {
-      alert(`Failed to update status: ${err.message || 'Network error'}`);
+      setFormErrorMsg(`Failed to update status: ${err.message || 'Network error'}`);
     } finally {
       setStatusUpdatingId(null);
     }
@@ -644,13 +644,18 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                   <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
                     Class & Section
                   </label>
-                  <input
-                    type="text"
+                  <select
                     value={formClassSec}
                     onChange={(e) => setFormClassSec(e.target.value)}
-                    placeholder="Class 10-A"
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white outline-none focus:border-indigo-500"
-                  />
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white outline-none focus:border-indigo-500 text-xs font-semibold"
+                  >
+                    <option value="">N/A (Staff / Administration)</option>
+                    {ALL_INSTITUTIONAL_CLASSES.map((cls) => (
+                      <option key={cls} value={cls}>
+                        {cls}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
 

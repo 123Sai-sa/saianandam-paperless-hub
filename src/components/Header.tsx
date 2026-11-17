@@ -166,6 +166,7 @@ export const Header: React.FC<HeaderProps> = ({
   const navItems: { id: NavigationTab; label: string; icon: any; roles?: UserRole[] }[] = [
     { id: 'dashboard', label: 'Overview', icon: LayoutDashboard },
     { id: 'academics', label: 'Gradebook', icon: BookOpen },
+    { id: 'users', label: 'User & ID Management', icon: Users, roles: ['admin', 'teacher'] },
     { id: 'fees', label: 'Fee Ledger', icon: CreditCard, roles: ['admin', 'accountant', 'student'] },
     { id: 'announcements', label: 'Announcements', icon: Megaphone },
     { id: 'audit', label: 'Audit Logs', icon: ShieldAlert, roles: ['admin', 'accountant'] },
@@ -675,6 +676,21 @@ export const Header: React.FC<HeaderProps> = ({
                 <span>Assignments</span>
               </button>
             </div>
+
+            {(currentUser.role === 'admin' || currentUser.role === 'teacher') && (
+              <button
+                type="button"
+                onClick={() => onSelectTab('users')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold text-xs transition cursor-pointer border ${
+                  activeTab === 'users'
+                    ? 'bg-amber-500 text-slate-950 border-amber-400 font-bold shadow-sm'
+                    : 'bg-slate-900 hover:bg-slate-800 text-amber-300 border-amber-500/30'
+                }`}
+              >
+                <Users className="w-3.5 h-3.5" />
+                <span>User & ID Management</span>
+              </button>
+            )}
           </div>
 
           <div className="hidden sm:flex items-center gap-2 text-[11px] text-slate-400">
