@@ -40,6 +40,7 @@ import {
   AssessmentSubmission,
   AcademicSubject,
   ExamTerm,
+  AttendanceRecord,
 } from './types';
 
 export const App: React.FC = () => {
@@ -103,6 +104,7 @@ export const App: React.FC = () => {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [lectures, setLectures] = useState<Lecture[]>([]);
   const [assessments, setAssessments] = useState<Assessment[]>([]);
+  const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
   const [subjects, setSubjects] = useState<AcademicSubject[]>(INITIAL_SUBJECTS);
   const [examTerms, setExamTerms] = useState<ExamTerm[]>(INITIAL_EXAM_TERMS);
   const [activeChatGroupId, setActiveChatGroupId] = useState('grp-10a');
@@ -118,6 +120,13 @@ export const App: React.FC = () => {
     }
   }, [currentUser?.id]);
 
+  // Keep attendance synced when returning to Overview / Dashboard
+  useEffect(() => {
+    if (currentUser && (activeTab === 'dashboard' || activeTab === 'overview')) {
+      sdbmsApi.getAttendance().then(setAttendanceRecords).catch(() => {});
+    }
+  }, [currentUser?.id, activeTab]);
+
   const loadAllData = async () => {
     try {
       const [
@@ -132,6 +141,7 @@ export const App: React.FC = () => {
         loadedBanner,
         loadedLectures,
         loadedAssessments,
+        loadedAttendance,
         loadedSubjects,
         loadedExamTerms,
       ] = await Promise.all([
@@ -146,6 +156,7 @@ export const App: React.FC = () => {
         sdbmsApi.getWelcomeBanner(),
         sdbmsApi.getLectures(),
         sdbmsApi.getAssessments(),
+        sdbmsApi.getAttendance(),
         sdbmsApi.getSubjects(),
         sdbmsApi.getExamTerms(),
       ]);
@@ -161,6 +172,7 @@ export const App: React.FC = () => {
       setWelcomeBanner(loadedBanner);
       setLectures(loadedLectures);
       setAssessments(loadedAssessments);
+      setAttendanceRecords(loadedAttendance);
       setSubjects(loadedSubjects);
       setExamTerms(loadedExamTerms);
     } catch (err) {
@@ -561,6 +573,9 @@ export const App: React.FC = () => {
                   users={users}
                   subjects={subjects}
                   examTerms={examTerms}
+                  attendanceRecords={attendanceRecords}
+                  assessments={assessments}
+                  lectures={lectures}
                   onUpdateStudentBadges={handleUpdateStudentBadges}
                 />
               )}

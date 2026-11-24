@@ -34,6 +34,9 @@ import {
   ALL_INSTITUTIONAL_CLASSES,
   AcademicSubject,
   ExamTerm,
+  AttendanceRecord,
+  Assessment,
+  Lecture,
 } from '../types';
 import { INITIAL_EXAM_TERMS, INITIAL_SUBJECTS } from '../data/sdbmsInitialData';
 
@@ -47,6 +50,9 @@ interface DashboardViewProps {
   users?: User[];
   subjects?: AcademicSubject[];
   examTerms?: ExamTerm[];
+  attendanceRecords?: AttendanceRecord[];
+  assessments?: Assessment[];
+  lectures?: Lecture[];
   onUpdateStudentBadges?: (studentId: string, badges: string[]) => Promise<void>;
 }
 
@@ -60,6 +66,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   users = [],
   subjects = INITIAL_SUBJECTS,
   examTerms = INITIAL_EXAM_TERMS,
+  attendanceRecords = [],
+  assessments = [],
+  lectures = [],
   onUpdateStudentBadges,
 }) => {
   const isTeacherOrAdmin = currentUser.role === 'teacher' || currentUser.role === 'admin';
@@ -95,11 +104,117 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const [selectedOverviewGradeId, setSelectedOverviewGradeId] = useState<string>('');
 
-  // Aggregate Metrics (for faculty/admin)
+  // Real Aggregate Metrics (from live Gradebook, Attendance, Fee Ledger, Assessments & Lectures)
   const totalCollections = transactions.reduce((acc, t) => acc + t.amount, 0);
+  const verifiedTxCount = transactions.filter((t) => t.status === 'verified').length;
+  const pendingTxCount = transactions.filter((t) => t.status !== 'verified').length;
+
   const avgPercentage = grades.length
     ? (grades.reduce((acc, g) => acc + g.percentage, 0) / grades.length).toFixed(1)
     : '0.0';
+  const avgGpa = grades.length
+    ? (grades.reduce((acc, g) => acc + g.gpa, 0) / grades.length).toFixed(1)
+    : '0.0';
+  const passedGradesCount = grades.filter((g) => g.status === 'pass').length;
+  const distinctGradeClassesCount = new Set(grades.map((g) => g.classSec).filter(Boolean)).size;
+  const activeExamTerm = examTerms.find((t) => t.status === 'active') || examTerms[0];
+
+  const campusAttendanceStats = React.useMemo(() => {
+    let totalEntries = 0;
+    let presentEntries = 0;
+    attendanceRecords.forEach((rec) => {
+      rec.records.forEach((entry) => {
+        totalEntries += 1;
+        if (entry.status === 'present' || entry.status === 'late') {
+          presentEntries += 1;
+        }
+      });
+    });
+    const rate = totalEntries > 0 ? ((presentEntries / totalEntries) * 100).toFixed(1) : null;
+    const latestDate = attendanceRecords[0]?.date || null;
+    return {
+      totalEntries,
+      presentEntries,
+      absentEntries: totalEntries - presentEntries,
+      rate,
+      latestDate,
+      registerCount: attendanceRecords.length,
+    };
+  }, [attendanceRecords]);
+
+  const myAttendanceStats = React.useMemo(() => {
+    if (!isStudent) return { total: 0, present: 0, absent: 0, rate: null as number | null };
+    let total = 0;
+    let present = 0;
+    let absent = 0;
+    attendanceRecords.forEach((rec) => {
+      const entry = rec.records.find(
+        (r) =>
+          r.studentId === currentUser.id ||
+          (Boolean(currentUser.rollNo) &&
+            Boolean(r.rollNo) &&
+            r.rollNo.trim().toLowerCase() === currentUser.rollNo!.trim().toLowerCase()) ||
+          r.studentName.trim().toLowerCase() === currentUser.fullName.trim().toLowerCase()
+      );
+      if (entry) {
+        total += 1;
+        if (entry.status === 'present' || entry.status === 'late') present += 1;
+        else if (entry.status === 'absent') absent += 1;
+      }
+    });
+    return {
+      total,
+      present,
+      absent,
+      rate: total > 0 ? Math.round((present / total) * 100) : null,
+    };
+  }, [attendanceRecords, currentUser, isStudent]);
+
+  const myAcademicExtras = React.useMemo(() => {
+    if (!isStudent) return null;
+    const classAssessments = assessments.filter(
+      (a) => a.status !== 'draft' && (!a.classSec || a.classSec === studentEnrolledClass)
+    );
+    const submittedList = classAssessments
+      .map((a) => ({
+        assessment: a,
+        submission: a.submissions.find(
+          (s) =>
+            s.studentId === currentUser.id ||
+            (Boolean(currentUser.rollNo && s.rollNo) &&
+              s.rollNo!.trim().toLowerCase() === currentUser.rollNo!.trim().toLowerCase()) ||
+            s.studentName.trim().toLowerCase() === currentUser.fullName.trim().toLowerCase()
+        ),
+      }))
+      .filter((x) => Boolean(x.submission));
+    const gradedList = submittedList.filter(
+      (x) => x.submission?.status === 'graded' && typeof x.submission.score === 'number'
+    );
+
+    const classLectures = lectures.filter(
+      (l) => l.status !== 'draft' && (!l.classSec || l.classSec === studentEnrolledClass)
+    );
+    const completedLectures = classLectures.filter((l) => l.completedBy?.includes(currentUser.id)).length;
+
+    const myTx = transactions.filter(
+      (t) =>
+        t.studentId === currentUser.id ||
+        t.studentName.trim().toLowerCase() === currentUser.fullName.trim().toLowerCase()
+    );
+    const verifiedPaid = myTx.filter((t) => t.status === 'verified').reduce((s, t) => s + t.amount, 0);
+    const pendingFeeCount = myTx.filter((t) => t.status !== 'verified').length;
+
+    return {
+      totalAssessments: classAssessments.length,
+      submittedCount: submittedList.length,
+      gradedCount: gradedList.length,
+      totalLectures: classLectures.length,
+      completedLectures,
+      verifiedPaid,
+      receiptCount: myTx.length,
+      pendingFeeCount,
+    };
+  }, [assessments, lectures, transactions, currentUser, isStudent, studentEnrolledClass]);
 
   const isGradeOwnedByStudent = (g: StudentGrade, student: { id: string; rollNo?: string; fullName?: string }) =>
     g.studentId === student.id ||
@@ -310,19 +425,71 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           student.fullName.toLowerCase().trim() === currentUser.fullName.toLowerCase().trim());
       const g = isCurrentStudentRow && myGrade ? myGrade : matchingGrades[0];
 
-      const percentage = g ? g.percentage : (student.rank === 1 ? 95.2 : student.rank === 2 ? 91.8 : 88.4);
-      const gpa = g ? g.gpa : (student.rank === 1 ? 9.8 : student.rank === 2 ? 9.5 : 9.2);
-      const gradeLetter = g ? g.grade : (percentage >= 90 ? 'A+' : percentage >= 80 ? 'A' : 'B+');
+      const percentage = g ? g.percentage : 0;
+      const gpa = g ? g.gpa : 0;
+      const gradeLetter = g ? g.grade : 'Pending';
       return {
         ...student,
         calculatedPercentage: percentage,
         calculatedGpa: gpa,
         calculatedGrade: gradeLetter,
         hasMarksheet: Boolean(g),
-        displayBadges: student.badges || (student.rank === 1 ? ['🌟 Math Star', '🏆 Prasanthi Scholar'] : ['🏅 Dharma Star']),
+        displayBadges: student.badges || [],
       };
     })
-    .sort((a, b) => b.calculatedPercentage - a.calculatedPercentage);
+    .sort((a, b) => {
+      if (a.hasMarksheet !== b.hasMarksheet) return a.hasMarksheet ? -1 : 1;
+      return b.calculatedPercentage - a.calculatedPercentage;
+    });
+
+  const activeClassGradebookSummary = React.useMemo(() => {
+    const classGrades = grades.filter((g) => g.classSec === activeClass);
+    const avgPct = classGrades.length
+      ? (classGrades.reduce((sum, g) => sum + g.percentage, 0) / classGrades.length).toFixed(1)
+      : null;
+    const passCount = classGrades.filter((g) => g.status === 'pass').length;
+    const passRate = classGrades.length ? Math.round((passCount / classGrades.length) * 100) : null;
+    const topper = classGrades.length
+      ? [...classGrades].sort((a, b) => b.percentage - a.percentage)[0]
+      : null;
+
+    const subjectBreakdown = subjects.map((sub) => {
+      const relevant = classGrades.filter((g) => sub.id in (g.scores || {}));
+      const avgScore = relevant.length
+        ? Number((relevant.reduce((sum, g) => sum + Number(g.scores[sub.id] || 0), 0) / relevant.length).toFixed(1))
+        : null;
+      const avgSubPct =
+        avgScore !== null && sub.maxMarks > 0 ? Math.round((avgScore / sub.maxMarks) * 100) : 0;
+      return {
+        id: sub.id,
+        name: sub.name,
+        maxMarks: sub.maxMarks,
+        avgScore,
+        avgSubPct,
+      };
+    });
+
+    const totalAssessments = assessments.filter((a) => a.status !== 'draft').length;
+    const totalSubmissions = assessments.reduce((sum, a) => sum + (a.submissions?.length || 0), 0);
+    const gradedSubmissions = assessments.reduce(
+      (sum, a) => sum + (a.submissions?.filter((s) => s.status === 'graded').length || 0),
+      0
+    );
+    const publishedLectures = lectures.filter((l) => l.status !== 'draft').length;
+
+    return {
+      count: classGrades.length,
+      avgPct,
+      passCount,
+      passRate,
+      topper,
+      subjectBreakdown,
+      totalAssessments,
+      totalSubmissions,
+      gradedSubmissions,
+      publishedLectures,
+    };
+  }, [grades, activeClass, subjects, assessments, lectures]);
 
   const myClassRankIndex = isStudent
     ? rankedStudents.findIndex(
@@ -425,13 +592,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      {/* Primary KPI Grid (Dynamically Driven by Student Marksheet when Role is Student) */}
+      {/* Primary KPI Grid (Dynamically Driven by Real Gradebook, Attendance, Assessments & Fee Ledger) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* KPI 1: Marksheet Grade & Percentage (Student) / Class Enrollment (Faculty) */}
+        {/* KPI 1: Marksheet Grade & Percentage (Student) / Real Enrollment & Gradebook Records (Faculty) */}
         <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-              {isStudent ? 'Marksheet Grade' : 'Class Enrollment'}
+              {isStudent ? 'Marksheet Grade' : 'Students & Gradebook'}
             </span>
             <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
               <GraduationCap className="w-5 h-5" />
@@ -443,7 +610,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 ? myGrade
                   ? `${myGrade.grade} (${myGrade.percentage}%)`
                   : 'Pending Entry'
-                : '850+ Students'}
+                : `${studentUsers.length} Students`}
             </div>
             <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
               {isStudent ? (
@@ -459,8 +626,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )
               ) : (
                 <>
-                  <span className="text-emerald-400 font-semibold">100% Digital</span>
-                  <span>• Zero paper registers</span>
+                  <span className="text-emerald-400 font-semibold">{grades.length} Marksheets</span>
+                  <span className="truncate">• {distinctGradeClassesCount} classes graded</span>
                 </>
               )}
             </div>
@@ -471,7 +638,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-              Academic Index (GPA)
+              {isStudent ? 'Academic Index (GPA)' : 'Gradebook Aggregate'}
             </span>
             <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
               <TrendingUp className="w-5 h-5" />
@@ -483,7 +650,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 ? myGrade
                   ? `${myGrade.gpa} / 10.0`
                   : '-- / 10.0'
-                : `${avgPercentage}% Aggregate`}
+                : grades.length > 0
+                ? `${avgPercentage}% (${avgGpa} GPA)`
+                : 'No Marks Yet'}
             </div>
             <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
               {isStudent ? (
@@ -509,19 +678,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )
               ) : (
                 <>
-                  <span className="text-indigo-400 font-semibold">Term-2 Half Yearly</span>
-                  <span>Assessment</span>
+                  <span className="text-indigo-400 font-semibold">
+                    {passedGradesCount}/{grades.length} Passed
+                  </span>
+                  <span className="truncate">• {activeExamTerm?.name || 'Active Term'}</span>
                 </>
               )}
             </div>
           </div>
         </div>
 
-        {/* KPI 3: Live Class Rank from Marksheet (Student) / Campus Attendance (Faculty) */}
+        {/* KPI 3: Live Class Rank & Attendance (Student) / Real Campus Attendance (Faculty) */}
         <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-              {isStudent ? 'Class Rank (Marksheet)' : 'Campus Attendance'}
+              {isStudent ? 'Class Rank & Attendance' : 'Campus Attendance'}
             </span>
             <div className="p-2 rounded-xl bg-teal-500/10 text-teal-400 border border-teal-500/20">
               {isStudent ? <Trophy className="w-5 h-5" /> : <CalendarCheck className="w-5 h-5" />}
@@ -533,15 +704,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 ? myClassRank
                   ? `#${myClassRank} in ${activeClass}`
                   : activeClass
-                : '97.2% Average'}
+                : campusAttendanceStats.rate !== null
+                ? `${campusAttendanceStats.rate}% Present`
+                : 'No Registers'}
             </div>
             <div className="text-xs text-slate-400 mt-1 flex items-center justify-between">
               <span className="text-slate-300 font-medium truncate">
                 {isStudent
-                  ? myGrade
+                  ? myAttendanceStats.total > 0
+                    ? `Att: ${myAttendanceStats.rate}% (${myAttendanceStats.present}/${myAttendanceStats.total}) • ${rankedStudents.length} peers`
+                    : myGrade
                     ? `Status: ${myGrade.status.toUpperCase()} (${rankedStudents.length} peers)`
                     : 'Rank updates with marksheet'
-                  : 'Daily Register Synced'}
+                  : campusAttendanceStats.totalEntries > 0
+                  ? `${campusAttendanceStats.presentEntries}/${campusAttendanceStats.totalEntries} marked • ${campusAttendanceStats.registerCount} registers`
+                  : 'No attendance marked yet'}
               </span>
               <button
                 type="button"
@@ -554,7 +731,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
 
-        {/* KPI 4: Subject Mastery / Focus Area (Student) / Treasury (Faculty) */}
+        {/* KPI 4: Subject Mastery (Student) / Real Fee Collections & Receipts (Faculty) */}
         <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
@@ -579,15 +756,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <span className="text-amber-400 font-semibold truncate">
                       Top: {myMarksheetInsights.strongest.name}
                     </span>
-                    <span className="shrink-0">({myMarksheetInsights.strongest.score}%)</span>
+                    <span className="shrink-0">
+                      ({myMarksheetInsights.strongest.score}/{myMarksheetInsights.strongest.maxMarks} • {myMarksheetInsights.strongest.pct}%)
+                    </span>
                   </>
                 ) : (
                   <span>Subject scores pending</span>
                 )
               ) : (
                 <>
-                  <span className="text-amber-400 font-semibold">Cryptographically</span>
-                  <span>Verified Hash</span>
+                  <span className="text-amber-400 font-semibold">
+                    {verifiedTxCount}/{transactions.length} Verified
+                  </span>
+                  <span>• {pendingTxCount} Pending</span>
                 </>
               )}
             </div>
@@ -970,16 +1151,190 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <strong>Faculty Remark:</strong> &ldquo;{myGrade.remarks || 'Consistent academic performance and paperless compliance.'}&rdquo;
                     </p>
                   </div>
+
+                  {/* Live Attendance, Assignments, Lectures & Fee Ledger Summary */}
+                  {myAcademicExtras && (
+                    <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                        <div className="text-[10px] font-bold uppercase text-slate-400">My Attendance</div>
+                        <div className="text-sm font-black text-teal-400 mt-0.5">
+                          {myAttendanceStats.rate !== null ? `${myAttendanceStats.rate}%` : 'No Logs'}
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          {myAttendanceStats.total > 0
+                            ? `${myAttendanceStats.present}/${myAttendanceStats.total} days present`
+                            : 'Awaiting register'}
+                        </div>
+                      </div>
+                      <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                        <div className="text-[10px] font-bold uppercase text-slate-400">Assignments</div>
+                        <div className="text-sm font-black text-indigo-300 mt-0.5">
+                          {myAcademicExtras.submittedCount}/{myAcademicExtras.totalAssessments}
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          {myAcademicExtras.gradedCount} graded
+                        </div>
+                      </div>
+                      <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                        <div className="text-[10px] font-bold uppercase text-slate-400">Lectures</div>
+                        <div className="text-sm font-black text-amber-300 mt-0.5">
+                          {myAcademicExtras.completedLectures}/{myAcademicExtras.totalLectures}
+                        </div>
+                        <div className="text-[10px] text-slate-400">Completed</div>
+                      </div>
+                      <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                        <div className="text-[10px] font-bold uppercase text-slate-400">Fee Ledger</div>
+                        <div className="text-sm font-black text-emerald-400 mt-0.5">
+                          ₹ {myAcademicExtras.verifiedPaid.toLocaleString()}
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          {myAcademicExtras.receiptCount} receipts • {myAcademicExtras.pendingFeeCount} pending
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </>
               ) : (
-                <div className="p-8 rounded-xl bg-slate-950/60 border border-slate-800 text-center space-y-2">
-                  <BookOpen className="w-8 h-8 text-slate-600 mx-auto" />
-                  <div className="text-sm font-bold text-slate-300">No Marksheet Recorded Yet</div>
-                  <p className="text-xs text-slate-400 max-w-md mx-auto">
-                    Your personal academic overview, subject breakdown, GPA, and standing insights will automatically appear here as soon as your teacher publishes your marksheet.
-                  </p>
+                <div className="space-y-4">
+                  <div className="p-8 rounded-xl bg-slate-950/60 border border-slate-800 text-center space-y-2">
+                    <BookOpen className="w-8 h-8 text-slate-600 mx-auto" />
+                    <div className="text-sm font-bold text-slate-300">No Marksheet Recorded Yet</div>
+                    <p className="text-xs text-slate-400 max-w-md mx-auto">
+                      Your personal academic overview, subject breakdown, GPA, and standing insights will automatically appear here as soon as your teacher publishes your marksheet.
+                    </p>
+                  </div>
+                  {myAcademicExtras && (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                        <div className="text-[10px] font-bold uppercase text-slate-400">My Attendance</div>
+                        <div className="text-sm font-black text-teal-400 mt-0.5">
+                          {myAttendanceStats.rate !== null ? `${myAttendanceStats.rate}%` : 'No Logs'}
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          {myAttendanceStats.present}/{myAttendanceStats.total} days present
+                        </div>
+                      </div>
+                      <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                        <div className="text-[10px] font-bold uppercase text-slate-400">Assignments</div>
+                        <div className="text-sm font-black text-indigo-300 mt-0.5">
+                          {myAcademicExtras.submittedCount}/{myAcademicExtras.totalAssessments}
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          {myAcademicExtras.gradedCount} graded
+                        </div>
+                      </div>
+                      <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                        <div className="text-[10px] font-bold uppercase text-slate-400">Lectures</div>
+                        <div className="text-sm font-black text-amber-300 mt-0.5">
+                          {myAcademicExtras.completedLectures}/{myAcademicExtras.totalLectures}
+                        </div>
+                        <div className="text-[10px] text-slate-400">Completed</div>
+                      </div>
+                      <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                        <div className="text-[10px] font-bold uppercase text-slate-400">Fee Ledger</div>
+                        <div className="text-sm font-black text-emerald-400 mt-0.5">
+                          ₹ {myAcademicExtras.verifiedPaid.toLocaleString()}
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          {myAcademicExtras.receiptCount} receipts
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Faculty / Admin / Accountant Real Gradebook & Institutional Operations Card */}
+          {!isStudent && (
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+                <div>
+                  <h2 className="text-base font-bold text-white flex items-center gap-2">
+                    <Award className="w-5 h-5 text-amber-400" />
+                    <span>
+                      Gradebook &amp; Academic Operations ({activeClass})
+                    </span>
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    {activeClassGradebookSummary.count > 0
+                      ? `${activeClassGradebookSummary.count} marksheets evaluated • Avg ${activeClassGradebookSummary.avgPct}% • Pass Rate ${activeClassGradebookSummary.passRate}%${activeClassGradebookSummary.topper ? ` • Topper: ${activeClassGradebookSummary.topper.studentName} (${activeClassGradebookSummary.topper.percentage}%)` : ''}`
+                      : `No marksheets recorded for ${activeClass} yet. School-wide total: ${grades.length} marksheets across ${distinctGradeClassesCount} classes.`}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => onNavigate('academics')}
+                  className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 cursor-pointer shrink-0"
+                >
+                  Open Gradebook →
+                </button>
+              </div>
+
+              {/* Subject Averages from Real Gradebook */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
+                {activeClassGradebookSummary.subjectBreakdown.map((sub) => (
+                  <div key={sub.id} className="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                    <div className="text-[11px] font-bold text-slate-400 truncate" title={sub.name}>
+                      {sub.name}
+                    </div>
+                    <div className="flex items-baseline justify-between mt-1">
+                      <span className="text-lg font-black text-white">
+                        {sub.avgScore !== null ? sub.avgScore : '--'}
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-bold">/ {sub.maxMarks}</span>
+                    </div>
+                    <div className="w-full bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden">
+                      <div
+                        className="bg-indigo-500 h-full rounded-full transition-all duration-300"
+                        style={{ width: `${Math.min(100, Math.max(0, sub.avgSubPct))}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Live Attendance, Assessments, Lectures & Fee Summary */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                  <div className="text-[10px] font-bold uppercase text-slate-400">Attendance</div>
+                  <div className="text-sm font-black text-teal-400 mt-0.5">
+                    {campusAttendanceStats.rate !== null ? `${campusAttendanceStats.rate}%` : 'No Logs'}
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    {campusAttendanceStats.presentEntries}/{campusAttendanceStats.totalEntries} marked
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                  <div className="text-[10px] font-bold uppercase text-slate-400">Assessments</div>
+                  <div className="text-sm font-black text-indigo-300 mt-0.5">
+                    {activeClassGradebookSummary.totalAssessments} Active
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    {activeClassGradebookSummary.totalSubmissions} submissions ({activeClassGradebookSummary.gradedSubmissions} graded)
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                  <div className="text-[10px] font-bold uppercase text-slate-400">Lectures</div>
+                  <div className="text-sm font-black text-amber-300 mt-0.5">
+                    {activeClassGradebookSummary.publishedLectures} Published
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    {subjects.length} subjects • {examTerms.length} terms
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                  <div className="text-[10px] font-bold uppercase text-slate-400">Fee Ledger</div>
+                  <div className="text-sm font-black text-emerald-400 mt-0.5">
+                    ₹ {totalCollections.toLocaleString()}
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    {verifiedTxCount} verified • {pendingTxCount} pending
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
