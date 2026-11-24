@@ -21,6 +21,7 @@ import {
   X,
   Save,
   Check,
+  Lock,
 } from 'lucide-react';
 import { StudentGrade, AcademicSubject, ExamTerm, User, ALL_INSTITUTIONAL_CLASSES } from '../types';
 import { INITIAL_SUBJECTS, INITIAL_EXAM_TERMS } from '../data/sdbmsInitialData';
@@ -50,6 +51,15 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
 }) => {
   const subjects = INITIAL_SUBJECTS;
   const isTeacherOrAdmin = ['admin', 'teacher'].includes(currentUser.role);
+  const isStudent = currentUser.role === 'student';
+
+  const isStudentOwnedGrade = (g: StudentGrade) =>
+    g.studentId === currentUser.id ||
+    (Boolean(currentUser.rollNo) &&
+      Boolean(g.rollNo) &&
+      g.rollNo.trim().toLowerCase() === currentUser.rollNo!.trim().toLowerCase()) ||
+    (Boolean(currentUser.fullName) &&
+      g.studentName.trim().toLowerCase() === currentUser.fullName.trim().toLowerCase());
 
   // Extract all distinct classes from grades, users, and all 24 institutional classes
   const availableClasses = useMemo(() => {
@@ -77,7 +87,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
   }, [currentUser, availableClasses]);
 
   const [selectedClass, setSelectedClass] = useState<string>(defaultClass);
-  const [selectedTerm, setSelectedTerm] = useState('term-half');
+  const [selectedTerm, setSelectedTerm] = useState(isStudent ? 'ALL' : 'term-half');
   const [searchQuery, setSearchQuery] = useState('');
   const [editingGrade, setEditingGrade] = useState<StudentGrade | null>(null);
   const [reportCardStudent, setReportCardStudent] = useState<StudentGrade | null>(null);
@@ -107,24 +117,23 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
   // Filtered grades based on role, class, and search
   const displayedGrades = useMemo(() => {
     return grades.filter((g) => {
-      // If student, strictly restrict to their own record only
-      if (currentUser.role === 'student') {
-        const matchesUser =
-          g.studentId === currentUser.id ||
-          (currentUser.rollNo && g.rollNo === currentUser.rollNo) ||
-          g.studentName.trim().toLowerCase() === currentUser.fullName.trim().toLowerCase();
-        if (!matchesUser) return false;
+      // If student, strictly restrict to their own marksheet records only
+      if (isStudent) {
+        if (!isStudentOwnedGrade(g)) return false;
+        if (selectedTerm && selectedTerm !== 'ALL' && g.examTermId && g.examTermId !== selectedTerm) {
+          return false;
+        }
+        return true;
       }
 
-      // Class filter
+      // Class filter for faculty & admin
       if (selectedClass !== 'ALL' && g.classSec !== selectedClass) {
         return false;
       }
 
       // Exam term filter
-      if (selectedTerm && g.examTermId !== selectedTerm) {
-        // Fallback: if examTermId not set, include or match
-        if (g.examTermId && g.examTermId !== selectedTerm) return false;
+      if (selectedTerm && selectedTerm !== 'ALL' && g.examTermId && g.examTermId !== selectedTerm) {
+        return false;
       }
 
       // Search filter
@@ -139,7 +148,36 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
 
       return true;
     });
-  }, [grades, currentUser, selectedClass, selectedTerm, searchQuery]);
+  }, [grades, currentUser, isStudent, selectedClass, selectedTerm, searchQuery]);
+
+  // Helper to resolve readable subject labels (standard + legacy/custom keys)
+  const getSubjectDisplayName = (subKey: string): string => {
+    const preset = subjects.find((s) => s.id === subKey);
+    if (preset) return preset.name;
+    const legacyMap: Record<string, string> = {
+      sub_math: 'Mathematics',
+      sub_eng: 'English Literature',
+      sub_sci: 'General Science',
+      sub_soc: 'Social Sciences',
+      sub_san: 'Sanskrit & Values',
+      sub_yoga: 'Yoga & Wellness',
+    };
+    if (legacyMap[subKey]) return legacyMap[subKey];
+    return subKey.replace(/^sub-custom-/, '').replace(/^sub[-_]/, '').replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  };
+
+  // Student personal summary derived from their active marksheet
+  const studentPrimaryGrade = isStudent ? displayedGrades[0] || null : null;
+  const studentTopSubject = useMemo(() => {
+    if (!studentPrimaryGrade || !studentPrimaryGrade.scores) return null;
+    const entries = Object.entries(studentPrimaryGrade.scores);
+    if (entries.length === 0) return null;
+    const sorted = [...entries].sort((a, b) => Number(b[1]) - Number(a[1]));
+    return {
+      name: getSubjectDisplayName(sorted[0][0]),
+      score: Number(sorted[0][1]),
+    };
+  }, [studentPrimaryGrade]);
 
   // Performance calculations
   const calculateDerived = (scores: Record<string, number>) => {
@@ -424,8 +462,8 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    const safeClassName = selectedClass.replace(/[\s-]/g, '_');
-    link.setAttribute('download', `Sri_Sathya_Sai_Anandam_${safeClassName}_Gradebook_${selectedTerm}.csv`);
+    const safeClassName = (isStudent ? currentUser.fullName : selectedClass).replace(/[\s-]+/g, '_');
+    link.setAttribute('download', `Sri_Sathya_Sai_Anandam_${safeClassName}_Marksheet_${selectedTerm}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -454,10 +492,12 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
               </span>
             </div>
             <h1 className="text-xl sm:text-2xl font-serif font-black text-white mt-1">
-              Classwise Academic Marksheet & Evaluation Matrix
+              {isStudent ? 'My Official Academic Marksheet & Report Card' : 'Classwise Academic Marksheet & Evaluation Matrix'}
             </h1>
             <p className="text-xs text-slate-400 mt-0.5">
-              Zero-paper continuous comprehensive assessment portal for teachers and administrators.
+              {isStudent
+                ? 'Confidential personal academic ledger. Only your own subject marks and progress reports are accessible here.'
+                : 'Zero-paper continuous comprehensive assessment portal for teachers and administrators.'}
             </p>
           </div>
         </div>
@@ -505,25 +545,41 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
             </>
           )}
 
-          <button
-            type="button"
-            onClick={handleExportCsv}
-            className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
-            title="Download CSV for this class"
-          >
-            <Download className="w-3.5 h-3.5 text-indigo-400" />
-            <span className="hidden sm:inline">Export CSV</span>
-          </button>
+          {displayedGrades.length > 0 && (
+            <button
+              type="button"
+              onClick={handleExportCsv}
+              className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+              title={isStudent ? 'Download my marksheet as CSV' : 'Download CSV for this class'}
+            >
+              <Download className="w-3.5 h-3.5 text-indigo-400" />
+              <span className="hidden sm:inline">{isStudent ? 'Export My CSV' : 'Export CSV'}</span>
+            </button>
+          )}
 
-          <button
-            type="button"
-            onClick={() => setIsClassPrintOpen(true)}
-            className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
-            title="Print consolidated class marksheet"
-          >
-            <Printer className="w-3.5 h-3.5 text-indigo-400" />
-            <span className="hidden sm:inline">Print Class</span>
-          </button>
+          {isStudent ? (
+            displayedGrades.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setReportCardStudent(displayedGrades[0])}
+                className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-md shadow-indigo-600/25"
+                title="View and print your official report card"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>Print My Report Card</span>
+              </button>
+            )
+          ) : (
+            <button
+              type="button"
+              onClick={() => setIsClassPrintOpen(true)}
+              className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+              title="Print consolidated class marksheet"
+            >
+              <Printer className="w-3.5 h-3.5 text-indigo-400" />
+              <span className="hidden sm:inline">Print Class</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -544,68 +600,81 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
         </div>
       )}
 
-      {/* CLASSWISE NAVIGATION & SELECTION BAR */}
+      {/* CLASSWISE NAVIGATION & SELECTION BAR (Faculty/Admin) vs STUDENT PRIVACY BAR */}
       <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl shadow-lg space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-          {/* Class Select Tabs */}
-          <div>
-            <div className="flex items-center gap-2 mb-2">
-              <GraduationCap className="w-4 h-4 text-amber-400" />
-              <span className="text-xs font-bold text-white uppercase tracking-wider">
-                Select Institutional Class / Grade:
+          {isStudent ? (
+            <div className="flex flex-wrap items-center gap-2.5">
+              <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-bold">
+                <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                <span>
+                  Personal Marksheet Only: {currentUser.fullName} ({currentUser.classSec || 'Student'} • Roll #{currentUser.rollNo || 'N/A'})
+                </span>
+              </div>
+              <span className="text-[11px] text-slate-400">
+                Other students&apos; marksheets are strictly private and hidden.
               </span>
             </div>
+          ) : (
+            /* Class Select Tabs for Faculty & Admin */
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <GraduationCap className="w-4 h-4 text-amber-400" />
+                <span className="text-xs font-bold text-white uppercase tracking-wider">
+                  Select Institutional Class / Grade:
+                </span>
+              </div>
 
-            <div className="flex flex-wrap gap-2">
-              {isTeacherOrAdmin && (
-                <button
-                  type="button"
-                  onClick={() => setSelectedClass('ALL')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
-                    selectedClass === 'ALL'
-                      ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
-                      : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700/60'
-                  }`}
-                >
-                  <Users className="w-3.5 h-3.5" />
-                  <span>All Classes</span>
-                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-950/50">
-                    {grades.length}
-                  </span>
-                </button>
-              )}
-
-              {availableClasses.map((cls) => {
-                const count = grades.filter((g) => g.classSec === cls).length;
-                const isSelected = selectedClass === cls;
-                return (
+              <div className="flex flex-wrap gap-2">
+                {isTeacherOrAdmin && (
                   <button
-                    key={cls}
                     type="button"
-                    onClick={() => setSelectedClass(cls)}
-                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
-                      isSelected
-                        ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/25 border border-amber-400'
+                    onClick={() => setSelectedClass('ALL')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                      selectedClass === 'ALL'
+                        ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
                         : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700/60'
                     }`}
                   >
-                    <span>{cls}</span>
-                    <span
-                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                        isSelected ? 'bg-amber-900/30 text-slate-950' : 'bg-slate-950 text-slate-400'
-                      }`}
-                    >
-                      {count}
+                    <Users className="w-3.5 h-3.5" />
+                    <span>All Classes</span>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-950/50">
+                      {grades.length}
                     </span>
                   </button>
-                );
-              })}
+                )}
+
+                {availableClasses.map((cls) => {
+                  const count = grades.filter((g) => g.classSec === cls).length;
+                  const isSelected = selectedClass === cls;
+                  return (
+                    <button
+                      key={cls}
+                      type="button"
+                      onClick={() => setSelectedClass(cls)}
+                      className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                        isSelected
+                          ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/25 border border-amber-400'
+                          : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700/60'
+                      }`}
+                    >
+                      <span>{cls}</span>
+                      <span
+                        className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                          isSelected ? 'bg-amber-900/30 text-slate-950' : 'bg-slate-950 text-slate-400'
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Term Selector & Search Controls */}
           <div className="flex flex-col sm:flex-row items-center gap-2.5 shrink-0">
-            {/* Term selector */}
             <div className="flex items-center gap-1.5 w-full sm:w-auto">
               <span className="text-xs text-slate-400 font-medium">Exam Term:</span>
               <select
@@ -613,6 +682,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                 onChange={(e) => setSelectedTerm(e.target.value)}
                 className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white outline-none focus:border-indigo-500 cursor-pointer font-medium"
               >
+                <option value="ALL">All Exam Terms</option>
                 {INITIAL_EXAM_TERMS.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name}
@@ -621,81 +691,150 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
               </select>
             </div>
 
-            {/* Student Search */}
-            <div className="relative w-full sm:w-64">
-              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
-              <input
-                type="text"
-                placeholder="Search student or roll no..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 outline-none focus:border-indigo-500 font-sans"
-              />
-            </div>
+            {/* Student Search (Faculty/Admin only) */}
+            {!isStudent && (
+              <div className="relative w-full sm:w-64">
+                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                <input
+                  type="text"
+                  placeholder="Search student or roll no..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-9 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 outline-none focus:border-indigo-500 font-sans"
+                />
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Selected Class Performance Metric Bar */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3 border-t border-slate-800/80">
-          <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-              {selectedClass === 'ALL' ? 'School Average' : `${selectedClass} Average`}
-            </span>
-            <div className="flex items-baseline gap-2 mt-0.5">
-              <span className="text-xl font-bold text-emerald-400 font-mono">
-                {classAnalytics.avgPercentage}%
+        {/* Performance Metric Bar: Personal for Student vs Class Analytics for Faculty */}
+        {isStudent ? (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3 border-t border-slate-800/80">
+            <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                Your Aggregate
               </span>
-              <span className="text-[10px] text-slate-500">Overall</span>
+              <div className="flex items-baseline gap-2 mt-0.5">
+                <span className="text-xl font-bold text-emerald-400 font-mono">
+                  {studentPrimaryGrade ? `${studentPrimaryGrade.percentage}%` : '--'}
+                </span>
+                <span className="text-[10px] text-amber-300 font-bold">
+                  {studentPrimaryGrade ? `Grade ${studentPrimaryGrade.grade}` : 'Pending'}
+                </span>
+              </div>
             </div>
-          </div>
 
-          <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-              Pass Rate
-            </span>
-            <div className="flex items-baseline gap-2 mt-0.5">
-              <span className="text-xl font-bold text-indigo-400 font-mono">
-                {classAnalytics.passRate}%
+            <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                Total Marks
               </span>
-              <span className="text-[10px] text-slate-400">
-                ({classAnalytics.passedCount} Pass / {classAnalytics.failedCount} Needs Help)
-              </span>
+              <div className="flex items-baseline gap-2 mt-0.5">
+                <span className="text-xl font-bold text-indigo-400 font-mono">
+                  {studentPrimaryGrade ? `${studentPrimaryGrade.totalMarks}` : '--'}
+                </span>
+                <span className="text-[10px] text-slate-400">
+                  {studentPrimaryGrade ? `/ ${studentPrimaryGrade.maxPossible}` : 'Not recorded'}
+                </span>
+              </div>
             </div>
-          </div>
 
-          <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-              Class Strength
-            </span>
-            <div className="flex items-baseline gap-2 mt-0.5">
-              <span className="text-xl font-bold text-white font-mono">
-                {displayedGrades.length}
+            <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                Academic GPA
               </span>
-              <span className="text-[10px] text-slate-500">Enrolled Marks</span>
+              <div className="flex items-baseline gap-2 mt-0.5">
+                <span className="text-xl font-bold text-white font-mono">
+                  {studentPrimaryGrade ? `${studentPrimaryGrade.gpa}` : '--'}
+                </span>
+                <span className="text-[10px] text-emerald-400 uppercase font-bold">
+                  {studentPrimaryGrade ? studentPrimaryGrade.status : 'Awaiting'}
+                </span>
+              </div>
             </div>
-          </div>
 
-          <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 flex items-center gap-1">
-              <Award className="w-3 h-3" />
-              Class Topper
-            </span>
-            <div className="truncate mt-0.5">
-              {classAnalytics.topper ? (
-                <>
-                  <span className="text-xs font-bold text-white truncate block">
-                    {classAnalytics.topper.studentName}
-                  </span>
-                  <span className="text-[10px] text-emerald-400 font-mono">
-                    {classAnalytics.topper.totalMarks}/600 ({classAnalytics.topper.percentage}%) • GPA {classAnalytics.topper.gpa}
-                  </span>
-                </>
-              ) : (
-                <span className="text-xs text-slate-500">No records</span>
-              )}
+            <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 flex items-center gap-1">
+                <Award className="w-3 h-3" />
+                Strongest Subject
+              </span>
+              <div className="truncate mt-0.5">
+                {studentTopSubject ? (
+                  <>
+                    <span className="text-xs font-bold text-white truncate block">
+                      {studentTopSubject.name}
+                    </span>
+                    <span className="text-[10px] text-emerald-400 font-mono">
+                      {studentTopSubject.score} / 100
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-xs text-slate-500">No scores yet</span>
+                )}
+              </div>
             </div>
           </div>
-        </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3 border-t border-slate-800/80">
+            <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                {selectedClass === 'ALL' ? 'School Average' : `${selectedClass} Average`}
+              </span>
+              <div className="flex items-baseline gap-2 mt-0.5">
+                <span className="text-xl font-bold text-emerald-400 font-mono">
+                  {classAnalytics.avgPercentage}%
+                </span>
+                <span className="text-[10px] text-slate-500">Overall</span>
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                Pass Rate
+              </span>
+              <div className="flex items-baseline gap-2 mt-0.5">
+                <span className="text-xl font-bold text-indigo-400 font-mono">
+                  {classAnalytics.passRate}%
+                </span>
+                <span className="text-[10px] text-slate-400">
+                  ({classAnalytics.passedCount} Pass / {classAnalytics.failedCount} Needs Help)
+                </span>
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                Class Strength
+              </span>
+              <div className="flex items-baseline gap-2 mt-0.5">
+                <span className="text-xl font-bold text-white font-mono">
+                  {displayedGrades.length}
+                </span>
+                <span className="text-[10px] text-slate-500">Enrolled Marks</span>
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 flex items-center gap-1">
+                <Award className="w-3 h-3" />
+                Class Topper
+              </span>
+              <div className="truncate mt-0.5">
+                {classAnalytics.topper ? (
+                  <>
+                    <span className="text-xs font-bold text-white truncate block">
+                      {classAnalytics.topper.studentName}
+                    </span>
+                    <span className="text-[10px] text-emerald-400 font-mono">
+                      {classAnalytics.topper.totalMarks}/600 ({classAnalytics.topper.percentage}%) • GPA {classAnalytics.topper.gpa}
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-xs text-slate-500">No records</span>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Quick Edit Mode Floating Save Bar */}
@@ -732,15 +871,26 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
         <div className="p-4 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-bold text-white uppercase tracking-wide">
-              {selectedClass === 'ALL' ? 'All Classes Gradebook' : `${selectedClass} Official Evaluation Sheet`}
+              {isStudent
+                ? 'My Personal Official Marksheet'
+                : selectedClass === 'ALL'
+                ? 'All Classes Gradebook'
+                : `${selectedClass} Official Evaluation Sheet`}
             </h2>
             <span className="text-[11px] text-slate-400">
-              ({displayedGrades.length} students listed)
+              {isStudent
+                ? `(${displayedGrades.length} personal marksheet${displayedGrades.length === 1 ? '' : 's'})`
+                : `(${displayedGrades.length} students listed)`}
             </span>
           </div>
 
           <div className="text-[11px] text-slate-400">
-            Term: <strong className="text-white">{INITIAL_EXAM_TERMS.find((t) => t.id === selectedTerm)?.name || selectedTerm}</strong>
+            Term:{' '}
+            <strong className="text-white">
+              {selectedTerm === 'ALL'
+                ? 'All Exam Terms'
+                : INITIAL_EXAM_TERMS.find((t) => t.id === selectedTerm)?.name || selectedTerm}
+            </strong>
           </div>
         </div>
 
@@ -766,13 +916,17 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
             <tbody className="divide-y divide-slate-800/60">
               {displayedGrades.length === 0 ? (
                 <tr>
-                  <td colSpan={subjects.length + 6} className="py-12 text-center text-slate-500">
+                  <td colSpan={subjects.length + 7} className="py-12 text-center text-slate-500">
                     <BookOpen className="w-8 h-8 text-slate-600 mx-auto mb-2" />
                     <p className="text-sm font-semibold text-slate-400">
-                      No marksheet records found for {selectedClass} in {selectedTerm}.
+                      {isStudent
+                        ? 'No marksheet has been recorded for your profile in this term yet.'
+                        : `No marksheet records found for ${selectedClass} in ${selectedTerm}.`}
                     </p>
                     <p className="text-xs text-slate-600 mt-1">
-                      Click <strong>"Record Marksheet"</strong> above to enter marks for this class.
+                      {isStudent
+                        ? 'Once your class teacher publishes your marks, your marksheet and overview metrics will update automatically.'
+                        : 'Click "Record Marksheet" above to enter marks for this class.'}
                     </p>
                   </td>
                 </tr>
@@ -1331,13 +1485,13 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {subjects.map((sub) => {
-                  const score = reportCardStudent.scores[sub.id] || 0;
+                {Object.entries(reportCardStudent.scores || {}).map(([subKey, scoreVal]) => {
+                  const score = Number(scoreVal || 0);
                   const subGrade =
-                    score >= 90 ? 'A+' : score >= 80 ? 'A' : score >= 70 ? 'B+' : score >= 60 ? 'B' : 'C';
+                    score >= 90 ? 'A+' : score >= 80 ? 'A' : score >= 70 ? 'B+' : score >= 60 ? 'B' : score >= 50 ? 'C' : score >= 40 ? 'D' : 'F';
                   return (
-                    <tr key={sub.id}>
-                      <td className="p-2.5 font-medium">{sub.name}</td>
+                    <tr key={subKey}>
+                      <td className="p-2.5 font-medium">{getSubjectDisplayName(subKey)}</td>
                       <td className="p-2.5 text-center text-slate-600">100</td>
                       <td className="p-2.5 text-center text-slate-600">40</td>
                       <td className="p-2.5 text-center font-bold text-sm font-mono">{score}</td>
@@ -1403,8 +1557,8 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
         </div>
       )}
 
-      {/* CONSOLIDATED CLASS PRINT VIEW MODAL */}
-      {isClassPrintOpen && (
+      {/* CONSOLIDATED CLASS PRINT VIEW MODAL (Faculty/Admin only) */}
+      {!isStudent && isClassPrintOpen && (
         <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-50 flex items-center justify-center p-4">
           <div className="bg-white text-slate-900 rounded-2xl max-w-4xl w-full p-8 shadow-2xl overflow-y-auto max-h-[92vh]">
             <div className="text-center border-b-2 border-slate-900 pb-4 mb-6">

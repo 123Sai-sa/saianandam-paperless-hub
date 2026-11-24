@@ -22,8 +22,10 @@ import {
   X,
   Check,
   CalendarCheck,
+  BookOpen,
 } from 'lucide-react';
 import { User, StudentGrade, FeeTransaction, Announcement, AuditLog, NavigationTab, ALL_INSTITUTIONAL_CLASSES } from '../types';
+import { INITIAL_EXAM_TERMS, INITIAL_SUBJECTS } from '../data/sdbmsInitialData';
 
 interface DashboardViewProps {
   currentUser: User;
@@ -77,47 +79,130 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     '🌱 Eco Champion',
   ];
 
-  // Aggregate Metrics
+  const [selectedOverviewGradeId, setSelectedOverviewGradeId] = useState<string>('');
+
+  // Aggregate Metrics (for faculty/admin)
   const totalCollections = transactions.reduce((acc, t) => acc + t.amount, 0);
   const avgPercentage = grades.length
     ? (grades.reduce((acc, g) => acc + g.percentage, 0) / grades.length).toFixed(1)
-    : '88.5';
+    : '0.0';
 
-  // Fallback default grade representation to prevent undefined crashes
-  const defaultGrade: StudentGrade = {
-    id: 'grade-default',
-    studentId: currentUser.id,
-    studentName: currentUser.fullName,
-    rollNo: currentUser.rollNo || '101',
-    classSec: currentUser.classSec || 'Class 8-A',
-    examTermId: 'term-2-2026',
-    scores: {
-      'sub-math': 92,
-      'sub-phys': 88,
-      'sub-chem': 85,
-      'sub-eng': 94,
-      'sub-cs': 98,
-      'sub-soc': 89,
-    },
-    totalMarks: 546,
-    maxPossible: 600,
-    percentage: 91.0,
-    grade: 'A+',
-    gpa: 9.6,
-    status: 'pass',
-    remarks: 'Consistent academic performance and paperless digital compliance.',
-    lastUpdated: new Date().toISOString(),
+  const isGradeOwnedByStudent = (g: StudentGrade, student: { id: string; rollNo?: string; fullName?: string }) =>
+    g.studentId === student.id ||
+    (Boolean(student.rollNo) &&
+      Boolean(g.rollNo) &&
+      g.rollNo.trim().toLowerCase() === student.rollNo!.trim().toLowerCase()) ||
+    (Boolean(student.fullName) &&
+      g.studentName.trim().toLowerCase() === student.fullName!.trim().toLowerCase());
+
+  const getTermName = (termId?: string) => {
+    if (!termId) return 'Academic Assessment';
+    const found = INITIAL_EXAM_TERMS.find((t) => t.id === termId);
+    if (found) return found.name;
+    if (termId === 'term-mid-2026') return 'Mid-Term / Half-Yearly (2026)';
+    return termId.replace(/^term-/, '').toUpperCase();
   };
 
-  // Current student grade (for student view)
-  const myGrade: StudentGrade =
-    grades.find(
-      (g) =>
-        g.studentId === currentUser.id ||
-        (currentUser.rollNo && g.rollNo === currentUser.rollNo) ||
-        (currentUser.fullName && g.studentName.toLowerCase().trim() === currentUser.fullName.toLowerCase().trim())
-    ) ||
-    (isStudent ? defaultGrade : grades[0] || defaultGrade);
+  const getSubjectName = (subKey: string) => {
+    const preset = INITIAL_SUBJECTS.find((s) => s.id === subKey);
+    if (preset) return preset.name;
+    const legacyMap: Record<string, string> = {
+      sub_math: 'Mathematics',
+      sub_eng: 'English Literature',
+      sub_sci: 'General Science',
+      sub_soc: 'Social Studies',
+      sub_san: 'Sanskrit & Values',
+      sub_yoga: 'Yoga & Wellness',
+    };
+    if (legacyMap[subKey]) return legacyMap[subKey];
+    return subKey
+      .replace(/^sub-custom-/, '')
+      .replace(/^sub[-_]/, '')
+      .replace(/[-_]/g, ' ')
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  };
+
+  // All marksheets belonging strictly to the currently logged-in student (sorted newest first, active term prioritized)
+  const myGradesList: StudentGrade[] = isStudent
+    ? [...grades]
+        .filter((g) => isGradeOwnedByStudent(g, currentUser))
+        .sort((a, b) => {
+          const timeDiff =
+            new Date(b.lastUpdated || 0).getTime() - new Date(a.lastUpdated || 0).getTime();
+          if (timeDiff !== 0) return timeDiff;
+          return a.examTermId === 'term-half' ? -1 : 1;
+        })
+    : [];
+
+  // Active marksheet driving the student's overview (null if teacher hasn't recorded one yet)
+  const myGrade: StudentGrade | null = isStudent
+    ? myGradesList.find((g) => g.id === selectedOverviewGradeId) || myGradesList[0] || null
+    : null;
+
+  // Dynamic Overview Insights computed strictly from the student's marksheet
+  const myMarksheetInsights = React.useMemo(() => {
+    if (!myGrade) return null;
+    const scoreEntries = Object.entries(myGrade.scores || {}).map(([key, val]) => ({
+      key,
+      name: getSubjectName(key),
+      score: Number(val || 0),
+    }));
+
+    const sortedDesc = [...scoreEntries].sort((a, b) => b.score - a.score);
+    const strongest = sortedDesc[0] || null;
+    const focus = sortedDesc[sortedDesc.length - 1] || null;
+    const distinctionCount = scoreEntries.filter((s) => s.score >= 90).length;
+    const passedSubjects = scoreEntries.filter((s) => s.score >= 40);
+    const failedSubjects = scoreEntries.filter((s) => s.score < 40);
+
+    let standingLabel = 'Merit Standing';
+    let standingTone: 'emerald' | 'indigo' | 'amber' | 'rose' = 'indigo';
+    let standingSummary = '';
+
+    if (myGrade.status === 'fail' || myGrade.percentage < 40 || failedSubjects.length > 0) {
+      standingLabel = 'Academic Support Needed';
+      standingTone = 'rose';
+      const weakNames =
+        failedSubjects.length > 0
+          ? failedSubjects.map((s) => `${s.name} (${s.score}%)`).join(', ')
+          : focus
+          ? `${focus.name} (${focus.score}%)`
+          : 'core subjects';
+      standingSummary = `Your marksheet shows priority improvement needed in ${weakNames} to reach the 40% subject pass mark.`;
+    } else if (myGrade.percentage >= 90) {
+      standingLabel = 'Honors & Distinction';
+      standingTone = 'emerald';
+      standingSummary = strongest
+        ? `Outstanding ${myGrade.percentage}% aggregate led by ${strongest.name} (${strongest.score}/100) with ${distinctionCount} distinction${distinctionCount === 1 ? '' : 's'}.`
+        : `Outstanding ${myGrade.percentage}% aggregate across your evaluated subjects.`;
+    } else if (myGrade.percentage >= 75) {
+      standingLabel = 'Merit Standing';
+      standingTone = 'indigo';
+      standingSummary =
+        strongest && focus
+          ? `Strong ${myGrade.percentage}% performance led by ${strongest.name} (${strongest.score}/100). Boosting ${focus.name} (${focus.score}/100) can lift you into A+ honors.`
+          : `Consistent ${myGrade.percentage}% performance across evaluated subjects.`;
+    } else {
+      standingLabel = 'Steady Progress';
+      standingTone = 'amber';
+      standingSummary = focus
+        ? `Current aggregate is ${myGrade.percentage}% (${myGrade.grade}). Focused revision in ${focus.name} (${focus.score}/100) will raise your overall GPA.`
+        : `Current aggregate is ${myGrade.percentage}% (${myGrade.grade}).`;
+    }
+
+    return {
+      scoreEntries,
+      strongest,
+      focus,
+      distinctionCount,
+      passedSubjectsCount: passedSubjects.length,
+      failedSubjectsCount: failedSubjects.length,
+      standingLabel,
+      standingTone,
+      standingSummary,
+      termName: getTermName(myGrade.examTermId),
+    };
+  }, [myGrade]);
 
   // Collect student list for the Rank Board
   const studentUsers = users.filter((u) => u.role === 'student');
@@ -176,15 +261,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         },
       ];
 
-  // Map each student with their grade information and sort by percentage/rank
+  // Map each student with their latest/selected marksheet and sort by percentage/rank
   const rankedStudents = filteredStudents
     .map((student) => {
-      const g = grades.find(
-        (grade) =>
-          grade.studentId === student.id ||
-          grade.rollNo === student.rollNo ||
-          grade.studentName.toLowerCase().trim() === student.fullName.toLowerCase().trim()
-      );
+      const matchingGrades = grades
+        .filter((grade) => isGradeOwnedByStudent(grade, student))
+        .sort(
+          (a, b) =>
+            new Date(b.lastUpdated || 0).getTime() - new Date(a.lastUpdated || 0).getTime()
+        );
+      // If this row is the currently logged-in student and they selected a specific term marksheet in overview, reflect it
+      const isCurrentStudentRow =
+        isStudent &&
+        (student.id === currentUser.id ||
+          (Boolean(currentUser.rollNo) &&
+            Boolean(student.rollNo) &&
+            student.rollNo!.trim().toLowerCase() === currentUser.rollNo!.trim().toLowerCase()) ||
+          student.fullName.toLowerCase().trim() === currentUser.fullName.toLowerCase().trim());
+      const g = isCurrentStudentRow && myGrade ? myGrade : matchingGrades[0];
+
       const percentage = g ? g.percentage : (student.rank === 1 ? 95.2 : student.rank === 2 ? 91.8 : 88.4);
       const gpa = g ? g.gpa : (student.rank === 1 ? 9.8 : student.rank === 2 ? 9.5 : 9.2);
       const gradeLetter = g ? g.grade : (percentage >= 90 ? 'A+' : percentage >= 80 ? 'A' : 'B+');
@@ -193,10 +288,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         calculatedPercentage: percentage,
         calculatedGpa: gpa,
         calculatedGrade: gradeLetter,
+        hasMarksheet: Boolean(g),
         displayBadges: student.badges || (student.rank === 1 ? ['🌟 Math Star', '🏆 Prasanthi Scholar'] : ['🏅 Dharma Star']),
       };
     })
     .sort((a, b) => b.calculatedPercentage - a.calculatedPercentage);
+
+  const myClassRankIndex = isStudent
+    ? rankedStudents.findIndex(
+        (s) =>
+          s.id === currentUser.id ||
+          (currentUser.rollNo && s.rollNo === currentUser.rollNo) ||
+          s.fullName.toLowerCase().trim() === currentUser.fullName.toLowerCase().trim()
+      )
+    : -1;
+  const myClassRank = myClassRankIndex >= 0 ? myClassRankIndex + 1 : null;
 
   // Open Teacher Badge Editing Modal
   const handleOpenEditBadges = (student: { id: string; fullName: string; rollNo?: string; classSec?: string; badges?: string[]; displayBadges?: string[] }) => {
@@ -250,13 +356,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 border border-slate-800 p-6 sm:p-8 shadow-xl">
         <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2 mb-2">
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
               <span className="text-[10px] font-extrabold uppercase tracking-widest text-amber-400 bg-amber-500/15 px-2.5 py-0.5 rounded-full border border-amber-500/30">
                 Institutional Workspace Active
               </span>
               <span className="text-xs text-slate-400 font-medium">
                 Academic Session 2026–27
               </span>
+              {isStudent && myGrade && myMarksheetInsights && (
+                <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                  {myMarksheetInsights.standingLabel}: {myGrade.grade} ({myGrade.percentage}%)
+                </span>
+              )}
             </div>
             <h1 className="text-2xl sm:text-3xl font-bold font-serif text-white tracking-tight">
               Welcome back, {currentUser.fullName}
@@ -264,7 +375,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <p className="text-xs sm:text-sm text-slate-400 mt-1 max-w-2xl">
               {currentUser.role === 'admin' && 'Centralized command center. Oversee user accounts, class rank boards, academic marksheets, fee audit trails, and attendance books.'}
               {currentUser.role === 'teacher' && 'Academic faculty console. Manage subject marks, award badges on the Class Rank Board, and track daily classroom attendance.'}
-              {currentUser.role === 'student' && 'Student academic portal. View your class rank board, verified marksheet, daily attendance rate, and take video lecture quizzes.'}
+              {currentUser.role === 'student' && (myMarksheetInsights
+                ? `${myMarksheetInsights.standingSummary}`
+                : 'Student academic portal. Your personal overview will dynamically update once your teacher publishes your marksheet.')}
               {currentUser.role === 'accountant' && 'Institutional treasury console. Issue verified digital fee vouchers and audit cryptographic transaction ledgers.'}
             </p>
           </div>
@@ -272,23 +385,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
-              onClick={() => onNavigate(currentUser.role === 'teacher' ? 'academics' : currentUser.role === 'accountant' ? 'fees' : 'attendance')}
+              onClick={() => onNavigate(isStudent ? 'academics' : currentUser.role === 'teacher' ? 'academics' : currentUser.role === 'accountant' ? 'fees' : 'attendance')}
               className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-lg shadow-indigo-600/30 transition flex items-center gap-2 cursor-pointer"
             >
-              <span>{isStudent ? 'Check Attendance Book' : 'Explore Active Tasks'}</span>
+              <span>{isStudent ? 'View My Marksheet' : 'Explore Active Tasks'}</span>
               <ArrowUpRight className="w-4 h-4" />
             </button>
           </div>
         </div>
       </div>
 
-      {/* Primary KPI Grid */}
+      {/* Primary KPI Grid (Dynamically Driven by Student Marksheet when Role is Student) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* KPI 1: Grade / Enrollment */}
+        {/* KPI 1: Marksheet Grade & Percentage (Student) / Class Enrollment (Faculty) */}
         <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-              {isStudent ? 'Term-2 Grade' : 'Class Enrollment'}
+              {isStudent ? 'Marksheet Grade' : 'Class Enrollment'}
             </span>
             <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
               <GraduationCap className="w-5 h-5" />
@@ -296,16 +409,35 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
           <div className="mt-3">
             <div className="text-2xl font-black text-white">
-              {isStudent ? `${myGrade?.grade || 'A+'} (${myGrade?.percentage ?? 91}%)` : '850+ Students'}
+              {isStudent
+                ? myGrade
+                  ? `${myGrade.grade} (${myGrade.percentage}%)`
+                  : 'Pending Entry'
+                : '850+ Students'}
             </div>
             <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
-              <span className="text-emerald-400 font-semibold">100% Digital</span>
-              <span>• Zero paper registers</span>
+              {isStudent ? (
+                myGrade ? (
+                  <>
+                    <span className="text-emerald-400 font-semibold font-mono">
+                      {myGrade.totalMarks} / {myGrade.maxPossible}
+                    </span>
+                    <span className="truncate">• {myMarksheetInsights?.termName}</span>
+                  </>
+                ) : (
+                  <span>Awaiting teacher grade entry</span>
+                )
+              ) : (
+                <>
+                  <span className="text-emerald-400 font-semibold">100% Digital</span>
+                  <span>• Zero paper registers</span>
+                </>
+              )}
             </div>
           </div>
         </div>
 
-        {/* KPI 2: Academic Index (GPA) */}
+        {/* KPI 2: Academic Index (GPA) & Standing */}
         <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
@@ -317,61 +449,117 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
           <div className="mt-3">
             <div className="text-2xl font-black text-white">
-              {isStudent ? `${myGrade?.gpa ?? 9.6} / 10.0` : `${avgPercentage}% Aggregate`}
+              {isStudent
+                ? myGrade
+                  ? `${myGrade.gpa} / 10.0`
+                  : '-- / 10.0'
+                : `${avgPercentage}% Aggregate`}
             </div>
             <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
-              <span className="text-indigo-400 font-semibold">Term-2 Half Yearly</span>
-              <span>Assessment</span>
+              {isStudent ? (
+                myGrade && myMarksheetInsights ? (
+                  <>
+                    <span
+                      className={`font-semibold ${
+                        myMarksheetInsights.standingTone === 'rose'
+                          ? 'text-rose-400'
+                          : myMarksheetInsights.standingTone === 'amber'
+                          ? 'text-amber-400'
+                          : myMarksheetInsights.standingTone === 'emerald'
+                          ? 'text-emerald-400'
+                          : 'text-indigo-400'
+                      }`}
+                    >
+                      {myMarksheetInsights.standingLabel}
+                    </span>
+                    <span>• {myMarksheetInsights.distinctionCount} Distinctions</span>
+                  </>
+                ) : (
+                  <span>Calculated from your marksheet</span>
+                )
+              ) : (
+                <>
+                  <span className="text-indigo-400 font-semibold">Term-2 Half Yearly</span>
+                  <span>Assessment</span>
+                </>
+              )}
             </div>
           </div>
         </div>
 
-        {/* KPI 3: Daily Attendance Rate (Day-wise percentage) */}
+        {/* KPI 3: Live Class Rank from Marksheet (Student) / Campus Attendance (Faculty) */}
         <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-              {isStudent ? 'Attendance Rate' : 'Campus Attendance'}
+              {isStudent ? 'Class Rank (Marksheet)' : 'Campus Attendance'}
             </span>
             <div className="p-2 rounded-xl bg-teal-500/10 text-teal-400 border border-teal-500/20">
-              <CalendarCheck className="w-5 h-5" />
+              {isStudent ? <Trophy className="w-5 h-5" /> : <CalendarCheck className="w-5 h-5" />}
             </div>
           </div>
           <div className="mt-3">
             <div className="text-2xl font-black text-teal-400">
-              {isStudent ? '96.8%' : '97.2% Average'}
+              {isStudent
+                ? myClassRank
+                  ? `#${myClassRank} in ${activeClass}`
+                  : activeClass
+                : '97.2% Average'}
             </div>
             <div className="text-xs text-slate-400 mt-1 flex items-center justify-between">
-              <span className="text-slate-300 font-medium">
-                {isStudent ? '29 / 30 Days Present' : 'Daily Register Synced'}
+              <span className="text-slate-300 font-medium truncate">
+                {isStudent
+                  ? myGrade
+                    ? `Status: ${myGrade.status.toUpperCase()} (${rankedStudents.length} peers)`
+                    : 'Rank updates with marksheet'
+                  : 'Daily Register Synced'}
               </span>
               <button
                 type="button"
-                onClick={() => onNavigate('attendance')}
-                className="text-teal-400 hover:text-teal-300 font-bold"
+                onClick={() => onNavigate(isStudent ? 'academics' : 'attendance')}
+                className="text-teal-400 hover:text-teal-300 font-bold cursor-pointer shrink-0 ml-2"
               >
-                View Log →
+                {isStudent ? 'Marksheet →' : 'View Log →'}
               </button>
             </div>
           </div>
         </div>
 
-        {/* KPI 4: Treasury / Security */}
+        {/* KPI 4: Subject Mastery / Focus Area (Student) / Treasury (Faculty) */}
         <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-              {isStudent ? 'Fee Ledger' : 'Treasury / Collections'}
+              {isStudent ? 'Subject Mastery' : 'Treasury / Collections'}
             </span>
             <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20">
-              <CreditCard className="w-5 h-5" />
+              {isStudent ? <Award className="w-5 h-5" /> : <CreditCard className="w-5 h-5" />}
             </div>
           </div>
           <div className="mt-3">
-            <div className="text-2xl font-black text-white">
-              {isStudent ? 'Clear (Paid)' : `₹ ${totalCollections.toLocaleString()}`}
+            <div className="text-2xl font-black text-white truncate">
+              {isStudent
+                ? myMarksheetInsights
+                  ? `${myMarksheetInsights.passedSubjectsCount}/${myMarksheetInsights.scoreEntries.length} Passed`
+                  : 'No Subjects'
+                : `₹ ${totalCollections.toLocaleString()}`}
             </div>
-            <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
-              <span className="text-amber-400 font-semibold">Cryptographically</span>
-              <span>Verified Hash</span>
+            <div className="text-xs text-slate-400 mt-1 flex items-center gap-1 truncate">
+              {isStudent ? (
+                myMarksheetInsights?.strongest ? (
+                  <>
+                    <span className="text-amber-400 font-semibold truncate">
+                      Top: {myMarksheetInsights.strongest.name}
+                    </span>
+                    <span className="shrink-0">({myMarksheetInsights.strongest.score}%)</span>
+                  </>
+                ) : (
+                  <span>Subject scores pending</span>
+                )
+              ) : (
+                <>
+                  <span className="text-amber-400 font-semibold">Cryptographically</span>
+                  <span>Verified Hash</span>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -628,65 +816,140 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left 2 Cols: Academic Standings & Highlights */}
         <div className="lg:col-span-2 space-y-6">
-          {/* Student Specific Highlight Card */}
+          {/* Student Specific Marksheet-Driven Academic Performance Summary */}
           {isStudent && (
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-              <div className="flex items-center justify-between mb-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
                 <div>
                   <h2 className="text-base font-bold text-white flex items-center gap-2">
                     <Award className="w-5 h-5 text-amber-400" />
-                    <span>Academic Performance Summary (Term-2)</span>
+                    <span>
+                      Academic Performance Overview
+                      {myMarksheetInsights ? ` (${myMarksheetInsights.termName})` : ''}
+                    </span>
                   </h2>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Student: <strong className="text-slate-200">{myGrade?.studentName || currentUser.fullName}</strong> • Roll #{myGrade?.rollNo || currentUser.rollNo || '101'} • {myGrade?.classSec || currentUser.classSec || 'Class 10-A'}
+                    Student: <strong className="text-slate-200">{myGrade?.studentName || currentUser.fullName}</strong> • Roll #{myGrade?.rollNo || currentUser.rollNo || 'N/A'} • {myGrade?.classSec || currentUser.classSec || 'Enrolled'}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => onNavigate('academics')}
-                  className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1"
-                >
-                  View Full Marksheet →
-                </button>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  {myGradesList.length > 1 && (
+                    <select
+                      value={myGrade?.id || ''}
+                      onChange={(e) => setSelectedOverviewGradeId(e.target.value)}
+                      className="px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white outline-none focus:border-indigo-500 cursor-pointer"
+                    >
+                      {myGradesList.map((g) => (
+                        <option key={g.id} value={g.id}>
+                          {getTermName(g.examTermId)} ({g.percentage}%)
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('academics')}
+                    className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 cursor-pointer"
+                  >
+                    View My Marksheet →
+                  </button>
+                </div>
               </div>
 
-              {/* Subject Badges */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                {Object.entries(myGrade?.scores || {}).map(([subKey, score]) => {
-                  const subjectNames: Record<string, string> = {
-                    'sub-math': 'Mathematics',
-                    'sub-phys': 'Physics',
-                    'sub-chem': 'Chemistry',
-                    'sub-eng': 'English Lit',
-                    'sub-cs': 'Computer Science',
-                    'sub-soc': 'Social Studies',
-                  };
-                  return (
-                    <div key={subKey} className="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
-                      <div className="text-[11px] font-bold text-slate-400">
-                        {subjectNames[subKey] || subKey}
+              {myGrade && myMarksheetInsights ? (
+                <>
+                  {/* Marksheet-Driven Dynamic Standing Banner */}
+                  <div
+                    className={`mb-4 p-3.5 rounded-xl border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${
+                      myMarksheetInsights.standingTone === 'rose'
+                        ? 'bg-rose-950/35 border-rose-600/40 text-rose-200'
+                        : myMarksheetInsights.standingTone === 'amber'
+                        ? 'bg-amber-950/35 border-amber-600/40 text-amber-200'
+                        : myMarksheetInsights.standingTone === 'emerald'
+                        ? 'bg-emerald-950/35 border-emerald-600/40 text-emerald-200'
+                        : 'bg-indigo-950/35 border-indigo-600/40 text-indigo-200'
+                    }`}
+                  >
+                    <div className="space-y-0.5">
+                      <div className="font-bold flex items-center gap-2">
+                        <span>{myMarksheetInsights.standingLabel}</span>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] bg-slate-950/70 border border-white/10 font-mono">
+                          {myGrade.totalMarks}/{myGrade.maxPossible} • {myGrade.percentage}% • Grade {myGrade.grade}
+                        </span>
                       </div>
-                      <div className="flex items-baseline justify-between mt-1">
-                        <span className="text-xl font-black text-white">{score}</span>
-                        <span className="text-[10px] text-emerald-400 font-bold">/ 100</span>
-                      </div>
-                      <div className="w-full bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden">
-                        <div
-                          className="bg-indigo-500 h-full rounded-full"
-                          style={{ width: `${score}%` }}
-                        />
-                      </div>
+                      <p className="text-[11px] opacity-90">{myMarksheetInsights.standingSummary}</p>
                     </div>
-                  );
-                })}
-              </div>
+                    {myMarksheetInsights.focus && (
+                      <div className="text-[11px] px-2.5 py-1.5 rounded-lg bg-slate-950/60 border border-white/10 shrink-0">
+                        Focus Area: <strong>{myMarksheetInsights.focus.name}</strong> ({myMarksheetInsights.focus.score}/100)
+                      </div>
+                    )}
+                  </div>
 
-              <div className="mt-4 p-3 bg-indigo-950/30 border border-indigo-800/40 rounded-xl flex items-start gap-3 text-xs text-indigo-200">
-                <Sparkles className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
-                <p>
-                  <strong>Faculty Remark:</strong> &ldquo;{myGrade?.remarks || 'Consistent academic performance and paperless compliance.'}&rdquo;
-                </p>
-              </div>
+                  {/* Subject Score Breakdown (Dynamically reflects all subjects in marksheet) */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    {myMarksheetInsights.scoreEntries.map(({ key, name, score }) => {
+                      const subGrade =
+                        score >= 90 ? 'A+' : score >= 80 ? 'A' : score >= 70 ? 'B+' : score >= 60 ? 'B' : score >= 50 ? 'C' : score >= 40 ? 'D' : 'F';
+                      const barColor =
+                        score >= 90
+                          ? 'bg-emerald-500'
+                          : score >= 75
+                          ? 'bg-indigo-500'
+                          : score >= 40
+                          ? 'bg-amber-500'
+                          : 'bg-rose-500';
+                      const gradeTextColor =
+                        score >= 90
+                          ? 'text-emerald-400'
+                          : score >= 75
+                          ? 'text-indigo-400'
+                          : score >= 40
+                          ? 'text-amber-400'
+                          : 'text-rose-400';
+
+                      return (
+                        <div key={key} className="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                          <div className="flex items-center justify-between gap-1">
+                            <div className="text-[11px] font-bold text-slate-400 truncate" title={name}>
+                              {name}
+                            </div>
+                            <span className={`text-[10px] font-black ${gradeTextColor}`}>
+                              {subGrade}
+                            </span>
+                          </div>
+                          <div className="flex items-baseline justify-between mt-1">
+                            <span className="text-xl font-black text-white">{score}</span>
+                            <span className="text-[10px] text-slate-400 font-bold">/ 100</span>
+                          </div>
+                          <div className="w-full bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden">
+                            <div
+                              className={`${barColor} h-full rounded-full transition-all duration-300`}
+                              style={{ width: `${Math.min(100, Math.max(0, score))}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-4 p-3 bg-indigo-950/30 border border-indigo-800/40 rounded-xl flex items-start gap-3 text-xs text-indigo-200">
+                    <Sparkles className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+                    <p>
+                      <strong>Faculty Remark:</strong> &ldquo;{myGrade.remarks || 'Consistent academic performance and paperless compliance.'}&rdquo;
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <div className="p-8 rounded-xl bg-slate-950/60 border border-slate-800 text-center space-y-2">
+                  <BookOpen className="w-8 h-8 text-slate-600 mx-auto" />
+                  <div className="text-sm font-bold text-slate-300">No Marksheet Recorded Yet</div>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto">
+                    Your personal academic overview, subject breakdown, GPA, and standing insights will automatically appear here as soon as your teacher publishes your marksheet.
+                  </p>
+                </div>
+              )}
             </div>
           )}
 

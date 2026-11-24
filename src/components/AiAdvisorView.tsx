@@ -19,12 +19,25 @@ interface AiAdvisorViewProps {
 }
 
 export const AiAdvisorView: React.FC<AiAdvisorViewProps> = ({ grades, currentUser }) => {
-  const [selectedStudentId, setSelectedStudentId] = useState(grades[0]?.id || '');
+  const isStudent = currentUser.role === 'student';
+  const visibleGrades = isStudent
+    ? grades.filter(
+        (g) =>
+          g.studentId === currentUser.id ||
+          (currentUser.rollNo &&
+            g.rollNo &&
+            g.rollNo.trim().toLowerCase() === currentUser.rollNo.trim().toLowerCase()) ||
+          (currentUser.fullName &&
+            g.studentName.trim().toLowerCase() === currentUser.fullName.trim().toLowerCase())
+      )
+    : grades;
+
+  const [selectedStudentId, setSelectedStudentId] = useState(visibleGrades[0]?.id || '');
   const [inquiry, setInquiry] = useState('');
   const [loading, setLoading] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<string | null>(null);
 
-  const activeStudent = grades.find((g) => g.id === selectedStudentId) || grades[0];
+  const activeStudent = visibleGrades.find((g) => g.id === selectedStudentId) || visibleGrades[0];
 
   const handleGenerateDiagnostic = async () => {
     if (!activeStudent) return;
@@ -68,23 +81,31 @@ User Inquiry: ${inquiry || 'Provide full academic diagnostic and 4-week remediat
         <div className="space-y-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
             <h2 className="text-sm font-bold text-white uppercase tracking-wider">
-              Select Candidate Student
+              {isStudent ? 'My Marksheet Profile' : 'Select Candidate Student'}
             </h2>
 
-            <div>
-              <label className="block text-xs text-slate-400 mb-1">Student Profile</label>
-              <select
-                value={selectedStudentId}
-                onChange={(e) => setSelectedStudentId(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white outline-none focus:border-purple-500"
-              >
-                {grades.map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.studentName} ({g.rollNo}) — {g.percentage}% ({g.grade})
-                  </option>
-                ))}
-              </select>
-            </div>
+            {visibleGrades.length > 0 ? (
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">
+                  {isStudent ? 'Your Marksheet' : 'Student Profile'}
+                </label>
+                <select
+                  value={activeStudent?.id || ''}
+                  onChange={(e) => setSelectedStudentId(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white outline-none focus:border-purple-500"
+                >
+                  {visibleGrades.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.studentName} ({g.rollNo}) — {g.percentage}% ({g.grade})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-xs text-slate-400">
+                No marksheet has been recorded for your student account yet. Once faculty publishes your marksheet, you can run an AI diagnostic here.
+              </div>
+            )}
 
             {/* Quick Metrics Card */}
             {activeStudent && (
