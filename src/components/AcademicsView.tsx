@@ -136,12 +136,35 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
   const [isSavingTerms, setIsSavingTerms] = useState(false);
 
   // Form State for Adding New Marksheet
+  interface RecordSubjectEntry {
+    id: string;
+    name: string;
+    maxMarks: number;
+    passMarks: number;
+    score: number;
+  }
+  const buildRecordSubjectEntries = (subjectList: AcademicSubject[]): RecordSubjectEntry[] =>
+    subjectList.map((s) => ({
+      id: s.id,
+      name: s.name,
+      maxMarks: s.maxMarks || 100,
+      passMarks: s.passMarks || Math.round((s.maxMarks || 100) * 0.4),
+      score: Math.round((s.maxMarks || 100) * 0.8),
+    }));
+
   const [newStudentId, setNewStudentId] = useState('');
   const [newStudentName, setNewStudentName] = useState('');
   const [newRollNo, setNewRollNo] = useState('');
   const [newClassSec, setNewClassSec] = useState(selectedClass === 'ALL' ? 'Class 10-A' : selectedClass);
   const [newExamTermId, setNewExamTermId] = useState(examTerms[0]?.id || 'term-half');
   const [newScores, setNewScores] = useState<Record<string, number>>(() => buildDefaultScores(subjects));
+  const [recordSubjectEntries, setRecordSubjectEntries] = useState<RecordSubjectEntry[]>(() =>
+    buildRecordSubjectEntries(subjects)
+  );
+  const [recNewSubName, setRecNewSubName] = useState('');
+  const [recNewSubMax, setRecNewSubMax] = useState(100);
+  const [recNewSubScore, setRecNewSubScore] = useState(80);
+  const [recAlsoSaveToGradebook, setRecAlsoSaveToGradebook] = useState(false);
   const [newRemarks, setNewRemarks] = useState('Satisfactory performance with consistent exam effort.');
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -181,8 +204,19 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
     });
   }, [grades, currentUser, isStudent, selectedClass, selectedTerm, searchQuery]);
 
-  // Helper to resolve subject metadata (name, maxMarks, passMarks) from configured subjects
-  const getSubjectMeta = (subKey: string): { name: string; maxMarks: number; passMarks: number } => {
+  // Helper to resolve subject metadata (name, maxMarks, passMarks) with per-marksheet override support
+  const getSubjectMeta = (
+    subKey: string,
+    gradeObj?: { subjectMeta?: Record<string, { name: string; maxMarks: number; passMarks: number }> } | null
+  ): { name: string; maxMarks: number; passMarks: number } => {
+    const customOverride = gradeObj?.subjectMeta?.[subKey];
+    if (customOverride) {
+      return {
+        name: customOverride.name,
+        maxMarks: customOverride.maxMarks || 100,
+        passMarks: customOverride.passMarks || Math.round((customOverride.maxMarks || 100) * 0.4),
+      };
+    }
     const preset = subjects.find((s) => s.id === subKey);
     if (preset) {
       return {
@@ -209,7 +243,8 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
     return { name, maxMarks: 100, passMarks: 40 };
   };
 
-  const getSubjectDisplayName = (subKey: string): string => getSubjectMeta(subKey).name;
+  const getSubjectDisplayName = (subKey: string, gradeObj?: StudentGrade | null): string =>
+    getSubjectMeta(subKey, gradeObj).name;
 
   const getTermDisplayName = (termId?: string): string => {
     if (!termId || termId === 'ALL') return 'All Exam Terms';
@@ -221,7 +256,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
   const studentTopSubject = useMemo(() => {
     if (!studentPrimaryGrade || !studentPrimaryGrade.scores) return null;
     const entries = Object.entries(studentPrimaryGrade.scores).map(([subKey, val]) => {
-      const meta = getSubjectMeta(subKey);
+      const meta = getSubjectMeta(subKey, studentPrimaryGrade);
       const score = Number(val || 0);
       const pct = meta.maxMarks > 0 ? (score / meta.maxMarks) * 100 : 0;
       return { name: meta.name, score, maxMarks: meta.maxMarks, pct };
@@ -231,13 +266,19 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
     return sorted[0];
   }, [studentPrimaryGrade, subjects]);
 
-  // Performance calculations respecting each subject's maxMarks
-  const calculateDerived = (scores: Record<string, number>) => {
+  // Performance calculations respecting each subject's maxMarks (global or per-marksheet override)
+  const calculateDerived = (
+    scores: Record<string, number>,
+    subjectMetaOverride?: Record<string, { name: string; maxMarks: number; passMarks: number }>
+  ) => {
     const entries = Object.entries(scores);
     const total = entries.reduce((a, [, b]) => a + Number(b || 0), 0);
     const max =
       entries.length > 0
-        ? entries.reduce((a, [subKey]) => a + getSubjectMeta(subKey).maxMarks, 0)
+        ? entries.reduce(
+            (a, [subKey]) => a + getSubjectMeta(subKey, { subjectMeta: subjectMetaOverride }).maxMarks,
+            0
+          )
         : 100;
     const safeMax = Math.max(max, 1);
     const percentage = Number(((total / safeMax) * 100).toFixed(2));
@@ -296,13 +337,57 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
   // Handle score change in single edit modal
   const handleScoreChange = (subId: string, val: number) => {
     if (!editingGrade) return;
-    const maxAllowed = getSubjectMeta(subId).maxMarks;
+    const maxAllowed = getSubjectMeta(subId, editingGrade).maxMarks;
     const scoreVal = Math.min(maxAllowed, Math.max(0, val));
     const newScoresObj = { ...editingGrade.scores, [subId]: scoreVal };
-    const derived = calculateDerived(newScoresObj);
+    const derived = calculateDerived(newScoresObj, editingGrade.subjectMeta);
     setEditingGrade({
       ...editingGrade,
       scores: newScoresObj,
+      totalMarks: derived.total,
+      maxPossible: derived.max,
+      percentage: derived.percentage,
+      gpa: derived.gpa,
+      grade: derived.grade,
+      status: derived.status,
+    });
+  };
+
+  // Edit subject name / maximum marks directly on an existing subject in the marksheet editor
+  const handleEditingSubjectMetaChange = (
+    subKey: string,
+    updates: Partial<{ name: string; maxMarks: number; passMarks: number }>
+  ) => {
+    if (!editingGrade) return;
+    const currentMeta = getSubjectMeta(subKey, editingGrade);
+    const nextMax =
+      updates.maxMarks !== undefined
+        ? Math.max(10, Math.min(500, Number(updates.maxMarks) || 100))
+        : currentMeta.maxMarks;
+    const nextName = updates.name !== undefined ? updates.name : currentMeta.name;
+    const nextPass =
+      updates.passMarks !== undefined
+        ? Math.max(1, Math.min(nextMax, Number(updates.passMarks) || 40))
+        : Math.max(1, Math.min(nextMax, Math.round(nextMax * 0.4)));
+
+    const nextSubjectMeta = {
+      ...(editingGrade.subjectMeta || {}),
+      [subKey]: {
+        name: nextName,
+        maxMarks: nextMax,
+        passMarks: nextPass,
+      },
+    };
+
+    const currentScore = Number(editingGrade.scores[subKey] || 0);
+    const clampedScore = Math.min(nextMax, Math.max(0, currentScore));
+    const nextScores = { ...editingGrade.scores, [subKey]: clampedScore };
+    const derived = calculateDerived(nextScores, nextSubjectMeta);
+
+    setEditingGrade({
+      ...editingGrade,
+      scores: nextScores,
+      subjectMeta: nextSubjectMeta,
       totalMarks: derived.total,
       maxPossible: derived.max,
       percentage: derived.percentage,
@@ -313,16 +398,40 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
   };
 
   const [newSubName, setNewSubName] = useState('');
+  const [newSubMax, setNewSubMax] = useState(100);
   const [newSubScore, setNewSubScore] = useState(80);
+  const [editAlsoSaveToGradebook, setEditAlsoSaveToGradebook] = useState(false);
 
-  const handleAddSubjectToEditingGrade = () => {
+  const handleAddSubjectToEditingGrade = async () => {
     if (!editingGrade || !newSubName.trim()) return;
-    const cleanKey = `sub-custom-${newSubName.trim().toLowerCase().replace(/\s+/g, '-')}`;
-    const newScoresObj = { ...editingGrade.scores, [cleanKey]: Math.min(100, Math.max(0, newSubScore)) };
-    const derived = calculateDerived(newScoresObj);
+    const trimmed = newSubName.trim();
+    const maxVal = Math.max(10, Math.min(500, Number(newSubMax) || 100));
+    const passVal = Math.max(1, Math.min(maxVal, Math.round(maxVal * 0.4)));
+    const clampedScore = Math.min(maxVal, Math.max(0, Number(newSubScore) || 0));
+
+    const existingGlobal = subjects.find(
+      (s) => s.name.trim().toLowerCase() === trimmed.toLowerCase()
+    );
+    const slug = trimmed.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 18);
+    let subKey = existingGlobal ? existingGlobal.id : `sub-custom-${slug || 'subject'}`;
+    if (subKey in editingGrade.scores) {
+      subKey = `${subKey}-${Date.now().toString(36).slice(-3)}`;
+    }
+
+    const nextSubjectMeta = {
+      ...(editingGrade.subjectMeta || {}),
+      [subKey]: {
+        name: trimmed,
+        maxMarks: maxVal,
+        passMarks: passVal,
+      },
+    };
+    const newScoresObj = { ...editingGrade.scores, [subKey]: clampedScore };
+    const derived = calculateDerived(newScoresObj, nextSubjectMeta);
     setEditingGrade({
       ...editingGrade,
       scores: newScoresObj,
+      subjectMeta: nextSubjectMeta,
       totalMarks: derived.total,
       maxPossible: derived.max,
       percentage: derived.percentage,
@@ -330,7 +439,22 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
       grade: derived.grade,
       status: derived.status,
     });
+
+    if (editAlsoSaveToGradebook && onSaveSubjects && !existingGlobal) {
+      const newGlobalSubject: AcademicSubject = {
+        id: subKey,
+        name: trimmed,
+        code: `${trimmed.slice(0, 4).toUpperCase()}-101`,
+        maxMarks: maxVal,
+        passMarks: passVal,
+      };
+      await onSaveSubjects([...subjects, newGlobalSubject]);
+      setSyncNotice(`✅ Added "${trimmed}" (Max ${maxVal}) to Gradebook & this marksheet.`);
+      setTimeout(() => setSyncNotice(null), 3500);
+    }
+
     setNewSubName('');
+    setNewSubMax(100);
     setNewSubScore(80);
   };
 
@@ -338,10 +462,15 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
     if (!editingGrade) return;
     const newScoresObj = { ...editingGrade.scores };
     delete newScoresObj[subKey];
-    const derived = calculateDerived(newScoresObj);
+    const nextSubjectMeta = editingGrade.subjectMeta ? { ...editingGrade.subjectMeta } : undefined;
+    if (nextSubjectMeta) {
+      delete nextSubjectMeta[subKey];
+    }
+    const derived = calculateDerived(newScoresObj, nextSubjectMeta);
     setEditingGrade({
       ...editingGrade,
       scores: newScoresObj,
+      subjectMeta: nextSubjectMeta,
       totalMarks: derived.total,
       maxPossible: derived.max,
       percentage: derived.percentage,
@@ -354,10 +483,37 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
   const handleSaveGrade = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingGrade) return;
-    await onUpdateGrade({
+
+    const cleanMeta: Record<string, { name: string; maxMarks: number; passMarks: number }> = {};
+    if (editingGrade.subjectMeta) {
+      Object.entries(editingGrade.subjectMeta).forEach(([k, v]) => {
+        if (k in editingGrade.scores && v.name.trim()) {
+          cleanMeta[k] = {
+            name: v.name.trim(),
+            maxMarks: Math.max(10, Math.min(500, v.maxMarks || 100)),
+            passMarks: Math.max(1, Math.min(v.maxMarks || 100, v.passMarks || 40)),
+          };
+        }
+      });
+    }
+
+    const derived = calculateDerived(editingGrade.scores, cleanMeta);
+    const payload: StudentGrade = {
       ...editingGrade,
+      subjectMeta: cleanMeta,
+      totalMarks: derived.total,
+      maxPossible: derived.max,
+      percentage: derived.percentage,
+      gpa: derived.gpa,
+      grade: derived.grade,
+      status: derived.status,
       lastUpdated: new Date().toISOString(),
-    });
+    };
+    if (Object.keys(cleanMeta).length === 0 && !editingGrade.subjectMeta) {
+      delete payload.subjectMeta;
+    }
+
+    await onUpdateGrade(payload);
     setEditingGrade(null);
     setSyncNotice(`✅ Marksheet updated and synchronized to Firestore DB`);
     setTimeout(() => setSyncNotice(null), 3500);
@@ -429,8 +585,9 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
     try {
       const saved = await onSaveSubjects(valid);
       setNewScores(buildDefaultScores(saved));
+      setRecordSubjectEntries(buildRecordSubjectEntries(saved));
       setIsSubjectModalOpen(false);
-      setSyncNotice(`✅ Saved ${saved.length} institutional subjects to Cloud Firestore DB.`);
+      setSyncNotice(`✅ Saved ${saved.length} institutional subjects and updated Gradebook totals in Cloud Firestore DB.`);
       setTimeout(() => setSyncNotice(null), 3500);
     } catch (err: any) {
       setSubjectFormError(err?.message || 'Failed to save subjects.');
@@ -499,6 +656,55 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
     }
   };
 
+  const handleAddSubjectToRecordModal = async () => {
+    const trimmed = recNewSubName.trim();
+    if (!trimmed) {
+      setFormError('Enter a subject name before adding.');
+      return;
+    }
+    const maxVal = Math.max(10, Math.min(500, Number(recNewSubMax) || 100));
+    const passVal = Math.max(1, Math.min(maxVal, Math.round(maxVal * 0.4)));
+    const clampedScore = Math.min(maxVal, Math.max(0, Number(recNewSubScore) || 0));
+
+    const existingGlobal = subjects.find(
+      (s) => s.name.trim().toLowerCase() === trimmed.toLowerCase()
+    );
+    const slug = trimmed.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 18);
+    let subId = existingGlobal ? existingGlobal.id : `sub-custom-${slug || 'subject'}`;
+    if (recordSubjectEntries.some((entry) => entry.id === subId)) {
+      subId = `${subId}-${Date.now().toString(36).slice(-3)}`;
+    }
+
+    setRecordSubjectEntries((prev) => [
+      ...prev,
+      {
+        id: subId,
+        name: trimmed,
+        maxMarks: maxVal,
+        passMarks: passVal,
+        score: clampedScore,
+      },
+    ]);
+
+    if (recAlsoSaveToGradebook && onSaveSubjects && !existingGlobal) {
+      const newGlobalSubject: AcademicSubject = {
+        id: subId,
+        name: trimmed,
+        code: `${trimmed.slice(0, 4).toUpperCase()}-101`,
+        maxMarks: maxVal,
+        passMarks: passVal,
+      };
+      await onSaveSubjects([...subjects, newGlobalSubject]);
+      setSyncNotice(`✅ Added "${trimmed}" (Max ${maxVal}) to Gradebook Subject List.`);
+      setTimeout(() => setSyncNotice(null), 3500);
+    }
+
+    setRecNewSubName('');
+    setRecNewSubMax(100);
+    setRecNewSubScore(80);
+    setFormError(null);
+  };
+
   // Submit New Marksheet
   const handleCreateNewGrade = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -509,15 +715,49 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
       return;
     }
 
+    if (recordSubjectEntries.length === 0) {
+      setFormError('At least one subject is required on the marksheet.');
+      return;
+    }
+
+    const invalidSubject = recordSubjectEntries.find((s) => !s.name.trim());
+    if (invalidSubject) {
+      setFormError('Every subject on the marksheet must have a valid name.');
+      return;
+    }
+
+    const builtScores: Record<string, number> = {};
+    const builtMeta: Record<string, { name: string; maxMarks: number; passMarks: number }> = {};
+
+    recordSubjectEntries.forEach((entry) => {
+      const maxVal = Math.max(10, Math.min(500, entry.maxMarks || 100));
+      const clampedScore = Math.min(maxVal, Math.max(0, Number(entry.score || 0)));
+      builtScores[entry.id] = clampedScore;
+
+      const globalMatch = subjects.find((s) => s.id === entry.id);
+      if (
+        !globalMatch ||
+        globalMatch.name.trim() !== entry.name.trim() ||
+        globalMatch.maxMarks !== maxVal
+      ) {
+        builtMeta[entry.id] = {
+          name: entry.name.trim(),
+          maxMarks: maxVal,
+          passMarks: Math.max(1, Math.min(maxVal, entry.passMarks || Math.round(maxVal * 0.4))),
+        };
+      }
+    });
+
     const activeTermId = newExamTermId || (selectedTerm !== 'ALL' ? selectedTerm : examTerms[0]?.id || 'term-half');
-    const derived = calculateDerived(newScores);
+    const derived = calculateDerived(builtScores, builtMeta);
     const gradePayload: Omit<StudentGrade, 'id' | 'lastUpdated'> = {
       studentId: newStudentId || `u-stud-${Date.now().toString(36)}`,
       studentName: newStudentName.trim(),
       rollNo: newRollNo.trim(),
       classSec: newClassSec,
       examTermId: activeTermId,
-      scores: newScores,
+      scores: builtScores,
+      ...(Object.keys(builtMeta).length > 0 ? { subjectMeta: builtMeta } : {}),
       totalMarks: derived.total,
       maxPossible: derived.max,
       percentage: derived.percentage,
@@ -561,7 +801,8 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
   };
 
   const handleQuickScoreChange = (gradeId: string, subId: string, val: number) => {
-    const maxAllowed = getSubjectMeta(subId).maxMarks;
+    const targetGrade = displayedGrades.find((g) => g.id === gradeId);
+    const maxAllowed = getSubjectMeta(subId, targetGrade).maxMarks;
     const cleanVal = Math.min(maxAllowed, Math.max(0, val));
     setQuickScores((prev) => ({
       ...prev,
@@ -575,7 +816,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
   const handleSaveAllQuickScores = async () => {
     const updatedGradesList: StudentGrade[] = displayedGrades.map((g) => {
       const studentScores = quickScores[g.id] || g.scores;
-      const derived = calculateDerived(studentScores);
+      const derived = calculateDerived(studentScores, g.subjectMeta);
       return {
         ...g,
         scores: studentScores,
@@ -743,6 +984,12 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                   setNewClassSec(selectedClass === 'ALL' ? 'Class 10-A' : selectedClass);
                   setNewExamTermId(selectedTerm !== 'ALL' ? selectedTerm : (examTerms[0]?.id || 'term-half'));
                   setNewScores(buildDefaultScores(subjects));
+                  setRecordSubjectEntries(buildRecordSubjectEntries(subjects));
+                  setRecNewSubName('');
+                  setRecNewSubMax(100);
+                  setRecNewSubScore(80);
+                  setRecAlsoSaveToGradebook(false);
+                  setFormError(null);
                   setIsAddModalOpen(true);
                 }}
                 className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-md shadow-amber-500/20"
@@ -1086,7 +1333,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
 
       {/* Marksheet Evaluation Table */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
-        <div className="p-4 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between">
+        <div className="p-4 bg-slate-950/80 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-bold text-white uppercase tracking-wide">
               {isStudent
@@ -1102,11 +1349,24 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
             </span>
           </div>
 
-          <div className="text-[11px] text-slate-400">
-            Term:{' '}
-            <strong className="text-white">
-              {getTermDisplayName(selectedTerm)}
-            </strong>
+          <div className="flex items-center gap-3 text-[11px] text-slate-400">
+            {isTeacherOrAdmin && onSaveSubjects && (
+              <button
+                type="button"
+                onClick={handleOpenSubjectManager}
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 font-semibold flex items-center gap-1 cursor-pointer transition"
+                title="Change existing Gradebook subjects, names, and maximum marks"
+              >
+                <SlidersHorizontal className="w-3 h-3" />
+                <span>Edit Subjects &amp; Max Marks</span>
+              </button>
+            )}
+            <div>
+              Term:{' '}
+              <strong className="text-white">
+                {getTermDisplayName(selectedTerm)}
+              </strong>
+            </div>
           </div>
         </div>
 
@@ -1118,8 +1378,27 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                 <th className="py-3 px-4">Student Name & Class</th>
                 {subjects.map((sub) => (
                   <th key={sub.id} className="py-3 px-2.5 text-center">
-                    <span className="block truncate max-w-[95px]" title={sub.name}>{sub.name.split(' ')[0]}</span>
-                    <span className="block text-[9px] text-slate-500 font-normal">Max: {sub.maxMarks}</span>
+                    {isTeacherOrAdmin && onSaveSubjects ? (
+                      <button
+                        type="button"
+                        onClick={handleOpenSubjectManager}
+                        className="mx-auto group text-center hover:text-amber-300 transition cursor-pointer"
+                        title={`Edit "${sub.name}" or change Max Marks (${sub.maxMarks})`}
+                      >
+                        <span className="flex items-center justify-center gap-1 truncate max-w-[100px]">
+                          <span className="truncate">{sub.name.split(' ')[0]}</span>
+                          <Edit3 className="w-2.5 h-2.5 text-slate-500 group-hover:text-amber-400 shrink-0" />
+                        </span>
+                        <span className="block text-[9px] text-slate-500 group-hover:text-amber-300/80 font-normal">
+                          Max: {sub.maxMarks}
+                        </span>
+                      </button>
+                    ) : (
+                      <>
+                        <span className="block truncate max-w-[95px]" title={sub.name}>{sub.name.split(' ')[0]}</span>
+                        <span className="block text-[9px] text-slate-500 font-normal">Max: {sub.maxMarks}</span>
+                      </>
+                    )}
                   </th>
                 ))}
                 <th className="py-3 px-3 text-center">Total</th>
@@ -1153,36 +1432,52 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                       {g.rollNo}
                     </td>
                     <td className="py-3 px-4">
-                      {isTeacherOrAdmin ? (
-                        <button
-                          type="button"
-                          onClick={() => setEditingGrade(g)}
-                          className="text-left group cursor-pointer"
-                          title="Click to edit marks & subjects for this student"
-                        >
-                          <div className="font-bold text-white text-sm group-hover:text-amber-400 flex items-center gap-1.5 transition">
-                            <span>{g.studentName}</span>
-                            <Edit3 className="w-3.5 h-3.5 text-slate-500 group-hover:text-amber-400 transition" />
+                      {(() => {
+                        const extraSubjectCount = Object.keys(g.scores || {}).filter(
+                          (k) => !subjects.some((s) => s.id === k)
+                        ).length;
+                        return isTeacherOrAdmin ? (
+                          <button
+                            type="button"
+                            onClick={() => setEditingGrade(g)}
+                            className="text-left group cursor-pointer"
+                            title="Click to edit marks & subjects for this student"
+                          >
+                            <div className="font-bold text-white text-sm group-hover:text-amber-400 flex items-center gap-1.5 transition">
+                              <span>{g.studentName}</span>
+                              <Edit3 className="w-3.5 h-3.5 text-slate-500 group-hover:text-amber-400 transition" />
+                            </div>
+                            <div className="text-[10px] text-amber-400/90 font-medium flex flex-wrap items-center gap-1.5">
+                              <span>{g.classSec} • {getTermDisplayName(g.examTermId)} • Click to edit</span>
+                              {extraSubjectCount > 0 && (
+                                <span className="px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-semibold">
+                                  +{extraSubjectCount} custom subject{extraSubjectCount > 1 ? 's' : ''}
+                                </span>
+                              )}
+                            </div>
+                          </button>
+                        ) : (
+                          <div>
+                            <div className="font-bold text-white text-sm">{g.studentName}</div>
+                            <div className="text-[10px] text-amber-400/90 font-medium flex flex-wrap items-center gap-1.5">
+                              <span>{g.classSec} • {getTermDisplayName(g.examTermId)}</span>
+                              {extraSubjectCount > 0 && (
+                                <span className="px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-semibold">
+                                  +{extraSubjectCount} custom subject{extraSubjectCount > 1 ? 's' : ''}
+                                </span>
+                              )}
+                            </div>
                           </div>
-                          <div className="text-[10px] text-amber-400/90 font-medium">
-                            {g.classSec} • {getTermDisplayName(g.examTermId)} • Click to edit
-                          </div>
-                        </button>
-                      ) : (
-                        <div>
-                          <div className="font-bold text-white text-sm">{g.studentName}</div>
-                          <div className="text-[10px] text-amber-400/90 font-medium">
-                            {g.classSec} • {getTermDisplayName(g.examTermId)}
-                          </div>
-                        </div>
-                      )}
+                        );
+                      })()}
                     </td>
 
                     {subjects.map((sub) => {
+                      const subMeta = getSubjectMeta(sub.id, g);
                       const currentScore = isQuickEditMode
                         ? quickScores[g.id]?.[sub.id] ?? g.scores[sub.id] ?? 0
                         : g.scores[sub.id] ?? 0;
-                      const pct = sub.maxMarks > 0 ? (currentScore / sub.maxMarks) * 100 : 0;
+                      const pct = subMeta.maxMarks > 0 ? (currentScore / subMeta.maxMarks) * 100 : 0;
 
                       if (isQuickEditMode) {
                         return (
@@ -1190,7 +1485,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                             <input
                               type="number"
                               min={0}
-                              max={sub.maxMarks}
+                              max={subMeta.maxMarks}
                               value={currentScore}
                               onChange={(e) =>
                                 handleQuickScoreChange(g.id, sub.id, parseInt(e.target.value) || 0)
@@ -1209,7 +1504,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                                 ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-800/60'
                                 : pct >= 75
                                 ? 'bg-indigo-950/60 text-indigo-300'
-                                : currentScore >= sub.passMarks
+                                : currentScore >= subMeta.passMarks
                                 ? 'bg-slate-800 text-slate-300'
                                 : 'bg-rose-950/60 text-rose-400 border border-rose-800/60'
                             }`}
@@ -1406,35 +1701,175 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                 </div>
               </div>
 
-              {/* Subject Marks Grid */}
+              {/* Editable Subject Marks & Max Marks Grid */}
               <div>
-                <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">
-                  Subject Marks (Configured Max Marks):
-                </label>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-                  {subjects.map((sub) => (
-                    <div key={sub.id} className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
-                      <span className="block text-[10px] text-slate-400 font-semibold truncate" title={sub.name}>
-                        {sub.name}
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                    Subjects, Maximum Marks &amp; Obtained Scores:
+                  </label>
+                  <span className="text-[10px] text-amber-400/90">
+                    Edit subject names or max marks directly
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {recordSubjectEntries.map((entry, idx) => (
+                    <div key={entry.id} className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 space-y-2">
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="text"
+                          required
+                          value={entry.name}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setRecordSubjectEntries((prev) =>
+                              prev.map((item, i) => (i === idx ? { ...item, name: val } : item))
+                            );
+                          }}
+                          placeholder="Subject Name"
+                          className="flex-1 min-w-0 px-2 py-1 bg-slate-900 border border-slate-700 rounded-lg text-white font-semibold text-[11px] outline-none focus:border-amber-400"
+                        />
+                        {recordSubjectEntries.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setRecordSubjectEntries((prev) => prev.filter((_, i) => i !== idx))
+                            }
+                            className="p-1 text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 rounded transition cursor-pointer shrink-0"
+                            title="Remove subject from marksheet"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <span className="block text-[9px] text-slate-500 uppercase font-bold mb-0.5">
+                            Max Marks
+                          </span>
+                          <input
+                            type="number"
+                            min={10}
+                            max={500}
+                            value={entry.maxMarks}
+                            onChange={(e) => {
+                              const nextMax = Math.max(10, Math.min(500, parseInt(e.target.value) || 100));
+                              setRecordSubjectEntries((prev) =>
+                                prev.map((item, i) =>
+                                  i === idx
+                                    ? {
+                                        ...item,
+                                        maxMarks: nextMax,
+                                        passMarks: Math.max(1, Math.min(nextMax, Math.round(nextMax * 0.4))),
+                                        score: Math.min(nextMax, item.score),
+                                      }
+                                    : item
+                                )
+                              );
+                            }}
+                            className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 font-mono text-center outline-none focus:border-amber-400"
+                          />
+                        </div>
+                        <div>
+                          <span className="block text-[9px] text-emerald-400 uppercase font-bold mb-0.5">
+                            Score Obtained
+                          </span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={entry.maxMarks}
+                            value={entry.score}
+                            onChange={(e) => {
+                              const nextScore = Math.min(
+                                entry.maxMarks,
+                                Math.max(0, parseInt(e.target.value) || 0)
+                              );
+                              setRecordSubjectEntries((prev) =>
+                                prev.map((item, i) => (i === idx ? { ...item, score: nextScore } : item))
+                              );
+                            }}
+                            className="w-full px-2 py-1 bg-slate-900 border border-indigo-500/50 rounded-lg text-white font-mono font-bold text-center outline-none focus:border-indigo-400"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Add Subject inside Record Marksheet */}
+                <div className="mt-3 p-3 rounded-xl bg-slate-950/90 border border-dashed border-slate-700 space-y-2">
+                  <div className="text-[11px] font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <PlusCircle className="w-3.5 h-3.5" />
+                    <span>Add Subject to Marksheet</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
+                    <div className="sm:col-span-5">
+                      <span className="block text-[9px] text-slate-500 uppercase font-bold mb-0.5">
+                        Subject Name
                       </span>
-                      <span className="block text-[9px] text-slate-500 font-mono mb-1">
-                        Max: {sub.maxMarks} • Pass: {sub.passMarks}
+                      <input
+                        type="text"
+                        placeholder="e.g. Computer Science"
+                        value={recNewSubName}
+                        onChange={(e) => setRecNewSubName(e.target.value)}
+                        className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white text-xs outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <span className="block text-[9px] text-slate-500 uppercase font-bold mb-0.5">
+                        Max Marks
+                      </span>
+                      <input
+                        type="number"
+                        min={10}
+                        max={500}
+                        title="Maximum Marks"
+                        placeholder="Max"
+                        value={recNewSubMax}
+                        onChange={(e) => {
+                          const maxVal = Math.max(10, Math.min(500, parseInt(e.target.value) || 100));
+                          setRecNewSubMax(maxVal);
+                          setRecNewSubScore((prev) => Math.min(maxVal, prev));
+                        }}
+                        className="w-full px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 font-mono text-center text-xs outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <span className="block text-[9px] text-emerald-400 uppercase font-bold mb-0.5">
+                        Score
                       </span>
                       <input
                         type="number"
                         min={0}
-                        max={sub.maxMarks}
-                        value={newScores[sub.id] ?? 0}
+                        max={recNewSubMax}
+                        title="Obtained Score"
+                        placeholder="Score"
+                        value={recNewSubScore}
                         onChange={(e) =>
-                          setNewScores({
-                            ...newScores,
-                            [sub.id]: Math.min(sub.maxMarks, Math.max(0, parseInt(e.target.value) || 0)),
-                          })
+                          setRecNewSubScore(Math.min(recNewSubMax, Math.max(0, parseInt(e.target.value) || 0)))
                         }
-                        className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono font-bold text-center outline-none focus:border-indigo-500"
+                        className="w-full px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono text-center text-xs outline-none focus:border-indigo-500"
                       />
                     </div>
-                  ))}
+                    <button
+                      type="button"
+                      onClick={handleAddSubjectToRecordModal}
+                      disabled={!recNewSubName.trim()}
+                      className="sm:col-span-3 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs transition cursor-pointer disabled:opacity-50"
+                    >
+                      + Add Subject
+                    </button>
+                  </div>
+                  {isTeacherOrAdmin && onSaveSubjects && (
+                    <label className="flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer pt-0.5">
+                      <input
+                        type="checkbox"
+                        checked={recAlsoSaveToGradebook}
+                        onChange={(e) => setRecAlsoSaveToGradebook(e.target.checked)}
+                        className="rounded border-slate-700 bg-slate-900 text-amber-500"
+                      />
+                      <span>Also add this subject to Gradebook columns for all students</span>
+                    </label>
+                  )}
                 </div>
               </div>
 
@@ -1453,7 +1888,17 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
 
               {/* Real-time Calculation Summary */}
               {(() => {
-                const derived = calculateDerived(newScores);
+                const previewScores: Record<string, number> = {};
+                const previewMeta: Record<string, { name: string; maxMarks: number; passMarks: number }> = {};
+                recordSubjectEntries.forEach((entry) => {
+                  previewScores[entry.id] = entry.score;
+                  previewMeta[entry.id] = {
+                    name: entry.name || 'Subject',
+                    maxMarks: entry.maxMarks || 100,
+                    passMarks: entry.passMarks || 40,
+                  };
+                });
+                const derived = calculateDerived(previewScores, previewMeta);
                 return (
                   <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between">
                     <div>
@@ -1549,44 +1994,78 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                 </select>
               </div>
 
-              {/* Existing Subjects & Marks */}
+              {/* Existing Subjects & Marks (Name, Max Marks, and Obtained Score Editable) */}
               <div>
-                <label className="block text-xs font-bold text-white uppercase tracking-wider mb-2.5">
-                  Subject Marks:
-                </label>
+                <div className="flex items-center justify-between mb-2.5">
+                  <label className="block text-xs font-bold text-white uppercase tracking-wider">
+                    Subject Name, Maximum Marks &amp; Score:
+                  </label>
+                  <span className="text-[10px] text-amber-400/90">
+                    Edit any subject title or max marks directly
+                  </span>
+                </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   {Object.entries(editingGrade.scores).map(([subKey, score]) => {
-                    const meta = getSubjectMeta(subKey);
+                    const meta = getSubjectMeta(subKey, editingGrade);
                     const totalSubjectEntries = Object.keys(editingGrade.scores).length;
 
                     return (
-                      <div key={subKey} className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-2">
-                        <div className="truncate flex-1">
-                          <span className="font-semibold text-slate-200 block truncate">{meta.name}</span>
-                          <span className="text-[10px] text-slate-500 font-mono">Max: {meta.maxMarks} • Pass: {meta.passMarks}</span>
-                        </div>
-
-                        <div className="flex items-center gap-1.5 shrink-0">
+                      <div key={subKey} className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                        <div className="flex items-center gap-1.5">
                           <input
-                            type="number"
-                            min={0}
-                            max={meta.maxMarks}
-                            value={score}
-                            onChange={(e) => handleScoreChange(subKey, parseInt(e.target.value) || 0)}
-                            className="w-16 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono font-bold text-center outline-none focus:border-amber-400"
+                            type="text"
+                            required
+                            value={meta.name}
+                            onChange={(e) => handleEditingSubjectMetaChange(subKey, { name: e.target.value })}
+                            placeholder="Subject Name"
+                            className="flex-1 min-w-0 px-2 py-1 bg-slate-900 border border-slate-700 rounded-lg text-white font-semibold text-xs outline-none focus:border-amber-400"
                           />
 
                           {totalSubjectEntries > 1 && (
                             <button
                               type="button"
                               onClick={() => handleRemoveSubjectFromEditingGrade(subKey)}
-                              className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 rounded transition"
+                              className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 rounded transition cursor-pointer shrink-0"
                               title="Remove subject from marksheet"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           )}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <span className="block text-[9px] text-slate-500 uppercase font-bold mb-0.5">
+                              Max Marks
+                            </span>
+                            <input
+                              type="number"
+                              min={10}
+                              max={500}
+                              value={meta.maxMarks}
+                              onChange={(e) =>
+                                handleEditingSubjectMetaChange(subKey, {
+                                  maxMarks: parseInt(e.target.value) || 100,
+                                })
+                              }
+                              className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 font-mono text-center outline-none focus:border-amber-400"
+                            />
+                          </div>
+
+                          <div>
+                            <span className="block text-[9px] text-amber-400 uppercase font-bold mb-0.5">
+                              Obtained
+                            </span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={meta.maxMarks}
+                              value={score}
+                              onChange={(e) => handleScoreChange(subKey, parseInt(e.target.value) || 0)}
+                              className="w-full px-2 py-1 bg-slate-900 border border-amber-500/40 rounded-lg text-white font-mono font-bold text-center outline-none focus:border-amber-400"
+                            />
+                          </div>
                         </div>
                       </div>
                     );
@@ -1607,7 +2086,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                         onClick={() => handleScoreChange(s.id, Math.round((s.maxMarks || 100) * 0.8))}
                         className="px-2.5 py-1 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/30 text-indigo-200 text-[11px] font-semibold cursor-pointer transition"
                       >
-                        + {s.name}
+                        + {s.name} (Max {s.maxMarks})
                       </button>
                     ))}
                 </div>
@@ -1619,34 +2098,75 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                   <PlusCircle className="w-3.5 h-3.5" />
                   <span>Add Another Subject to Marksheet</span>
                 </div>
-                <div className="flex flex-col sm:flex-row items-center gap-2">
-                  <input
-                    type="text"
-                    placeholder="e.g. Sanskrit, Moral Science, Arts..."
-                    value={newSubName}
-                    onChange={(e) => setNewSubName(e.target.value)}
-                    className="flex-1 px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-white text-xs outline-none focus:border-indigo-500 w-full sm:w-auto"
-                  />
-                  <div className="flex items-center gap-2 w-full sm:w-auto">
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
+                  <div className="sm:col-span-5">
+                    <span className="block text-[9px] text-slate-500 uppercase font-bold mb-0.5">
+                      Subject Name
+                    </span>
+                    <input
+                      type="text"
+                      placeholder="e.g. Sanskrit, Moral Science..."
+                      value={newSubName}
+                      onChange={(e) => setNewSubName(e.target.value)}
+                      className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-white text-xs outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <span className="block text-[9px] text-slate-500 uppercase font-bold mb-0.5">
+                      Max Marks
+                    </span>
+                    <input
+                      type="number"
+                      min={10}
+                      max={500}
+                      title="Maximum Marks"
+                      placeholder="Max"
+                      value={newSubMax}
+                      onChange={(e) => {
+                        const maxVal = Math.max(10, Math.min(500, parseInt(e.target.value) || 100));
+                        setNewSubMax(maxVal);
+                        setNewSubScore((prev) => Math.min(maxVal, prev));
+                      }}
+                      className="w-full px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-200 font-mono text-center text-xs outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <span className="block text-[9px] text-emerald-400 uppercase font-bold mb-0.5">
+                      Score
+                    </span>
                     <input
                       type="number"
                       min={0}
-                      max={100}
+                      max={newSubMax}
+                      title="Score Obtained"
                       placeholder="Score"
                       value={newSubScore}
-                      onChange={(e) => setNewSubScore(parseInt(e.target.value) || 0)}
-                      className="w-20 px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-white font-mono text-center text-xs outline-none focus:border-indigo-500"
+                      onChange={(e) =>
+                        setNewSubScore(Math.min(newSubMax, Math.max(0, parseInt(e.target.value) || 0)))
+                      }
+                      className="w-full px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-white font-mono text-center text-xs outline-none focus:border-indigo-500"
                     />
-                    <button
-                      type="button"
-                      onClick={handleAddSubjectToEditingGrade}
-                      disabled={!newSubName.trim()}
-                      className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs transition cursor-pointer disabled:opacity-50 shrink-0"
-                    >
-                      + Add Subject
-                    </button>
                   </div>
+                  <button
+                    type="button"
+                    onClick={handleAddSubjectToEditingGrade}
+                    disabled={!newSubName.trim()}
+                    className="sm:col-span-3 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs transition cursor-pointer disabled:opacity-50"
+                  >
+                    + Add Subject
+                  </button>
                 </div>
+                {onSaveSubjects && (
+                  <label className="flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer pt-0.5">
+                    <input
+                      type="checkbox"
+                      checked={editAlsoSaveToGradebook}
+                      onChange={(e) => setEditAlsoSaveToGradebook(e.target.checked)}
+                      className="rounded border-slate-700 bg-slate-900 text-amber-500"
+                    />
+                    <span>Also add this subject to Gradebook columns for all students</span>
+                  </label>
+                )}
               </div>
 
               {/* Faculty Remarks */}
@@ -1765,7 +2285,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
               </thead>
               <tbody className="divide-y divide-slate-200">
                 {Object.entries(reportCardStudent.scores || {}).map(([subKey, scoreVal]) => {
-                  const meta = getSubjectMeta(subKey);
+                  const meta = getSubjectMeta(subKey, reportCardStudent);
                   const score = Number(scoreVal || 0);
                   const pct = meta.maxMarks > 0 ? (score / meta.maxMarks) * 100 : 0;
                   const subGrade =

@@ -232,7 +232,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return termId.replace(/^term-/, '').toUpperCase();
   };
 
-  const getSubjectMeta = (subKey: string) => {
+  const getSubjectMeta = (subKey: string, gradeObj?: StudentGrade | null) => {
+    const customOverride = gradeObj?.subjectMeta?.[subKey];
+    if (customOverride) {
+      return {
+        name: customOverride.name,
+        maxMarks: customOverride.maxMarks || 100,
+        passMarks: customOverride.passMarks || Math.round((customOverride.maxMarks || 100) * 0.4),
+      };
+    }
     const preset = subjects.find((s) => s.id === subKey);
     if (preset) {
       return {
@@ -280,7 +288,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const myMarksheetInsights = React.useMemo(() => {
     if (!myGrade) return null;
     const scoreEntries = Object.entries(myGrade.scores || {}).map(([key, val]) => {
-      const meta = getSubjectMeta(key);
+      const meta = getSubjectMeta(key, myGrade);
       const score = Number(val || 0);
       const pct = meta.maxMarks > 0 ? Math.round((score / meta.maxMarks) * 100) : 0;
       return {

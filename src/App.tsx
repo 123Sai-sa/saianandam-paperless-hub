@@ -279,6 +279,71 @@ export const App: React.FC = () => {
   const handleSaveSubjects = async (updatedSubjects: AcademicSubject[]) => {
     const saved = await sdbmsApi.saveSubjects(updatedSubjects, currentUser || undefined);
     setSubjects(saved);
+
+    const subjectMap = new Map(saved.map((s) => [s.id, s]));
+    const changedGrades: StudentGrade[] = [];
+
+    grades.forEach((g) => {
+      const entries = Object.entries(g.scores || {});
+      if (entries.length === 0) return;
+
+      let scoresChanged = false;
+      const nextScores: Record<string, number> = {};
+      let total = 0;
+      let max = 0;
+
+      entries.forEach(([subKey, rawScore]) => {
+        const override = g.subjectMeta?.[subKey];
+        const globalSub = subjectMap.get(subKey);
+        const maxMarks = override?.maxMarks ?? globalSub?.maxMarks ?? 100;
+        const clampedScore = Math.min(maxMarks, Math.max(0, Number(rawScore || 0)));
+        if (clampedScore !== Number(rawScore || 0)) {
+          scoresChanged = true;
+        }
+        nextScores[subKey] = clampedScore;
+        total += clampedScore;
+        max += maxMarks;
+      });
+
+      const safeMax = Math.max(max, 1);
+      const percentage = Number(((total / safeMax) * 100).toFixed(2));
+      const gpa = Number(((percentage / 100) * 10).toFixed(1));
+      let gradeLetter: StudentGrade['grade'] = 'F';
+      if (percentage >= 90) gradeLetter = 'A+';
+      else if (percentage >= 80) gradeLetter = 'A';
+      else if (percentage >= 70) gradeLetter = 'B+';
+      else if (percentage >= 60) gradeLetter = 'B';
+      else if (percentage >= 50) gradeLetter = 'C';
+      else if (percentage >= 40) gradeLetter = 'D';
+      const status: StudentGrade['status'] = percentage >= 40 ? 'pass' : 'fail';
+
+      if (
+        scoresChanged ||
+        total !== g.totalMarks ||
+        safeMax !== g.maxPossible ||
+        percentage !== g.percentage ||
+        gpa !== g.gpa ||
+        gradeLetter !== g.grade ||
+        status !== g.status
+      ) {
+        changedGrades.push({
+          ...g,
+          scores: nextScores,
+          totalMarks: total,
+          maxPossible: safeMax,
+          percentage,
+          gpa,
+          grade: gradeLetter,
+          status,
+          lastUpdated: new Date().toISOString(),
+        });
+      }
+    });
+
+    if (changedGrades.length > 0) {
+      await handleBulkUpdateGrades(changedGrades);
+    }
+
     const updatedLogs = await sdbmsApi.getAuditLogs();
     setAuditLogs(updatedLogs);
     handleSoundChime();

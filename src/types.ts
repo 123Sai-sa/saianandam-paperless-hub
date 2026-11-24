@@ -63,6 +63,7 @@ export interface StudentGrade {
   classSec: string;
   examTermId: string;
   scores: Record<string, number>; // subjectId -> score
+  subjectMeta?: Record<string, { name: string; maxMarks: number; passMarks: number }>;
   totalMarks: number;
   maxPossible: number;
   percentage: number;
