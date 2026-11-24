@@ -1,6 +1,6 @@
 import express from 'express';
 import path from 'path';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 
@@ -348,6 +348,188 @@ Return ONLY JSON with this format:
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Audit computation failed' });
+  }
+});
+
+// Helper: Extract canonical YouTube watch URL from any YouTube link format
+function toCanonicalYoutubeUrl(rawUrl: string): string | null {
+  if (!rawUrl || typeof rawUrl !== 'string') return null;
+  const trimmed = rawUrl.trim();
+  const match = trimmed.match(
+    /(?:youtu\.be\/|youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|v\/|shorts\/))([A-Za-z0-9_-]{11})/
+  );
+  if (match && match[1]) {
+    return `https://www.youtube.com/watch?v=${match[1]}`;
+  }
+  return null;
+}
+
+// AI Lecture Video Analysis & Quiz Generator (YouTube Video -> Summary + Key Concepts + MCQ Quiz)
+app.post('/api/gemini/analyze-lecture-video', async (req, res) => {
+  try {
+    const {
+      videoUrl,
+      title,
+      subject,
+      classSec,
+      description,
+      keyPoints,
+      questionCount = 4,
+    } = req.body || {};
+
+    const canonicalYoutubeUrl = toCanonicalYoutubeUrl(videoUrl);
+    if (!canonicalYoutubeUrl) {
+      return res.status(400).json({
+        error:
+          'Please provide a valid YouTube video URL (youtube.com/watch?v=... or youtu.be/...) so AI can analyze the lecture video.',
+      });
+    }
+
+    const ai = getGeminiClient();
+    if (!ai) {
+      return res.status(503).json({
+        error:
+          'Gemini API key is not configured on the server. Please add GEMINI_API_KEY in Settings > Secrets to enable AI video analysis and quiz generation.',
+      });
+    }
+
+    const clampedCount = Math.min(8, Math.max(3, Number(questionCount) || 4));
+    const safeKeyPoints = Array.isArray(keyPoints)
+      ? keyPoints.filter((p) => typeof p === 'string' && p.trim()).join('; ')
+      : '';
+
+    const prompt = `You are an expert school educator and curriculum assessor.
+Watch and analyze the attached YouTube lecture video carefully (both spoken audio/narration and visual slides/board work).
+
+Lecture metadata (for context):
+- Title: ${title || 'Classroom Video Lecture'}
+- Subject: ${subject || 'General'}
+- Target Class: ${classSec || 'Secondary School'}
+${description ? `- Teacher Synopsis: ${description}` : ''}
+${safeKeyPoints ? `- Listed Key Points: ${safeKeyPoints}` : ''}
+
+Tasks:
+1. Write a clear, accurate "videoSummary" (2-4 sentences) summarizing what is actually taught and demonstrated in the video.
+2. Extract 4 to 6 concrete "keyConcepts" (short bullet points of definitions, formulas, or ideas covered in the video).
+3. List 3 to 5 "topicsCovered" (short topic labels from the video).
+4. Create ${clampedCount} conceptual multiple-choice "questions" that directly test student understanding of the material taught in this video:
+   - Each question must have exactly 4 distinct answer choices in "options".
+   - "correctAnswerIndex" must be an integer 0, 1, 2, or 3 corresponding to the single correct choice in "options".
+   - "explanation" must briefly explain why the correct answer is right based on the video content.
+   - Make questions age-appropriate for ${classSec || 'school students'} and avoid trivial "all of the above" options.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-4-hydrogen',
+      contents: [
+        {
+          fileData: {
+            fileUri: canonicalYoutubeUrl,
+            mimeType: 'video/mp4',
+          },
+        },
+        { text: prompt },
+      ],
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            videoSummary: { type: Type.STRING },
+            keyConcepts: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+            },
+            topicsCovered: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+            },
+            questions: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  question: { type: Type.STRING },
+                  options: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                  },
+                  correctAnswerIndex: { type: Type.INTEGER },
+                  explanation: { type: Type.STRING },
+                },
+                required: ['question', 'options', 'correctAnswerIndex', 'explanation'],
+              },
+            },
+          },
+          required: ['videoSummary', 'keyConcepts', 'topicsCovered', 'questions'],
+        },
+      },
+    });
+
+    const rawText = response.text;
+    if (!rawText) {
+      return res.status(502).json({
+        error: 'Gemini returned an empty response while analyzing the lecture video.',
+      });
+    }
+
+    const parsed = JSON.parse(rawText);
+    const normalizedQuestions = Array.isArray(parsed.questions)
+      ? parsed.questions
+          .filter((q: any) => q && typeof q.question === 'string' && Array.isArray(q.options) && q.options.length >= 2)
+          .slice(0, clampedCount)
+          .map((q: any, idx: number) => {
+            const opts = q.options.slice(0, 4).map((o: any) => String(o));
+            while (opts.length < 4) {
+              opts.push(`Option ${opts.length + 1}`);
+            }
+            const rawIdx = Number(q.correctAnswerIndex);
+            const safeIdx = Number.isInteger(rawIdx) && rawIdx >= 0 && rawIdx < opts.length ? rawIdx : 0;
+            return {
+              id: `ai-q-${Date.now()}-${idx + 1}`,
+              question: q.question.trim(),
+              options: opts,
+              correctOption: safeIdx,
+              correctAnswerIndex: safeIdx,
+              explanation: String(q.explanation || 'Derived from the lecture video content.').trim(),
+            };
+          })
+      : [];
+
+    if (normalizedQuestions.length === 0) {
+      return res.status(502).json({
+        error: 'AI analysis completed but did not produce valid quiz questions. Please try again.',
+      });
+    }
+
+    return res.json({
+      success: true,
+      source: 'gemini',
+      model: 'gemini-4-hydrogen',
+      canonicalYoutubeUrl,
+      data: {
+        videoSummary: String(parsed.videoSummary || '').trim(),
+        keyConcepts: Array.isArray(parsed.keyConcepts)
+          ? parsed.keyConcepts.map((c: any) => String(c).trim()).filter(Boolean)
+          : [],
+        topicsCovered: Array.isArray(parsed.topicsCovered)
+          ? parsed.topicsCovered.map((t: any) => String(t).trim()).filter(Boolean)
+          : [],
+        questions: normalizedQuestions,
+        analyzedAt: new Date().toISOString(),
+      },
+    });
+  } catch (err: any) {
+    console.error('Gemini analyze-lecture-video error:', err);
+    const message = err?.message || 'Failed to analyze YouTube video with Gemini AI.';
+    const status =
+      message.includes('API key') || message.includes('PERMISSION_DENIED')
+        ? 403
+        : message.includes('INVALID_ARGUMENT') || message.includes('not found') || message.includes('private')
+        ? 400
+        : 502;
+    return res.status(status).json({
+      error: `AI Video Analysis failed: ${message}`,
+    });
   }
 });
 

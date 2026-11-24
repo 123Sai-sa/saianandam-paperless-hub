@@ -25,8 +25,18 @@ import {
   Award,
   Check,
   RotateCcw,
+  Loader2,
+  Brain,
 } from 'lucide-react';
-import { User, Lecture, LectureResource, LectureQuiz, LectureQuizQuestion, ALL_INSTITUTIONAL_CLASSES } from '../types';
+import {
+  User,
+  Lecture,
+  LectureResource,
+  LectureQuiz,
+  LectureQuizQuestion,
+  LectureAiAnalysis,
+  ALL_INSTITUTIONAL_CLASSES,
+} from '../types';
 
 interface LecturesViewProps {
   currentUser: User;
@@ -93,7 +103,54 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
   const [quizSubmitted, setQuizSubmitted] = useState(false);
   const [quizScore, setQuizScore] = useState<{ correct: number; total: number; percentage: number; passed: boolean } | null>(null);
 
+  // AI Video Analysis & Quiz Generation State
+  const [aiAnalyzingLectureId, setAiAnalyzingLectureId] = useState<string | null>(null);
+  const [isAnalyzingFormVideo, setIsAnalyzingFormVideo] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiStatusNotice, setAiStatusNotice] = useState<string | null>(null);
+  const [formAiQuiz, setFormAiQuiz] = useState<LectureQuiz | null>(null);
+  const [formAiAnalysis, setFormAiAnalysis] = useState<LectureAiAnalysis | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
   const subjects = ['All', 'Physics', 'Mathematics', 'Chemistry', 'Computer Science', 'English'];
+
+  const requestAiVideoAnalysis = async (payload: {
+    videoUrl: string;
+    title?: string;
+    subject?: string;
+    classSec?: string;
+    description?: string;
+    keyPoints?: string[];
+    questionCount?: number;
+  }): Promise<{
+    analysis: LectureAiAnalysis;
+    questions: LectureQuizQuestion[];
+  }> => {
+    const response = await fetch('/api/gemini/analyze-lecture-video', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result?.success || !result?.data) {
+      throw new Error(
+        result?.error || `AI video analysis failed (HTTP ${response.status}). Please verify the YouTube URL and server configuration.`
+      );
+    }
+
+    const { videoSummary, keyConcepts, topicsCovered, questions, analyzedAt } = result.data;
+    return {
+      analysis: {
+        videoSummary: videoSummary || '',
+        keyConcepts: Array.isArray(keyConcepts) ? keyConcepts : [],
+        topicsCovered: Array.isArray(topicsCovered) ? topicsCovered : [],
+        analyzedAt: analyzedAt || new Date().toISOString(),
+        analyzedVideoUrl: result.canonicalYoutubeUrl || payload.videoUrl,
+        model: result.model || 'gemini-4-hydrogen',
+      },
+      questions: Array.isArray(questions) ? questions : [],
+    };
+  };
 
   const filteredLectures = lectures.filter((lec) => {
     // Class-level scoping: students only see lectures for their enrolled class or schoolwide (All)
@@ -130,6 +187,8 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
     setFormKeyPoints('');
     setFormResourceName('');
     setFormError(null);
+    setFormAiQuiz(null);
+    setFormAiAnalysis(null);
     setIsAddModalOpen(true);
   };
 
@@ -144,7 +203,52 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
     setFormKeyPoints(lecture.keyPoints.join('\n'));
     setFormResourceName(lecture.resources[0]?.name || '');
     setFormError(null);
+    setFormAiQuiz(lecture.quiz?.generatedByAi ? lecture.quiz : null);
+    setFormAiAnalysis(lecture.aiAnalysis || null);
     setIsAddModalOpen(true);
+  };
+
+  const handleAnalyzeFormVideo = async () => {
+    setFormError(null);
+    if (!formVideoUrl.trim() || !isYoutubeUrl(formVideoUrl)) {
+      setFormError('Please enter a valid YouTube video URL before running AI video analysis.');
+      return;
+    }
+
+    setIsAnalyzingFormVideo(true);
+    try {
+      const { analysis, questions } = await requestAiVideoAnalysis({
+        videoUrl: formVideoUrl.trim(),
+        title: formTitle.trim() || undefined,
+        subject: formSubject,
+        classSec: formClassSec,
+        description: formDescription.trim() || undefined,
+        keyPoints: formKeyPoints.split('\n').map((s) => s.trim()).filter(Boolean),
+        questionCount: 4,
+      });
+
+      setFormAiAnalysis(analysis);
+      setFormAiQuiz({
+        id: `quiz-ai-${Date.now()}`,
+        lectureId: editingLecture?.id || `lec-${Date.now()}`,
+        passThreshold: 75,
+        passPercentage: 75,
+        generatedByAi: true,
+        generatedAt: analysis.analyzedAt,
+        questions,
+      });
+
+      if (!formDescription.trim() && analysis.videoSummary) {
+        setFormDescription(analysis.videoSummary);
+      }
+      if (!formKeyPoints.trim() && analysis.keyConcepts.length > 0) {
+        setFormKeyPoints(analysis.keyConcepts.join('\n'));
+      }
+    } catch (err: any) {
+      setFormError(err?.message || 'Unable to analyze the YouTube video with AI.');
+    } finally {
+      setIsAnalyzingFormVideo(false);
+    }
   };
 
   const handleSaveLecture = async (e: React.FormEvent) => {
@@ -262,6 +366,8 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
         description: formDescription.trim(),
         keyPoints: keyPointsArray.length > 0 ? keyPointsArray : ['Core chapter concepts reviewed.'],
         resources,
+        ...(formAiQuiz ? { quiz: { ...formAiQuiz, lectureId: editingLecture.id } } : {}),
+        ...(formAiAnalysis ? { aiAnalysis: formAiAnalysis } : {}),
       });
     } else {
       await onAddLecture({
@@ -279,12 +385,15 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
         keyPoints: keyPointsArray.length > 0 ? keyPointsArray : ['Core chapter concepts reviewed.'],
         resources,
         status: 'published',
-        quiz: defaultLectureQuiz,
+        quiz: formAiQuiz || defaultLectureQuiz,
+        ...(formAiAnalysis ? { aiAnalysis: formAiAnalysis } : {}),
       });
     }
 
     setIsAddModalOpen(false);
     setEditingLecture(null);
+    setFormAiQuiz(null);
+    setFormAiAnalysis(null);
   };
 
   // Helper to check if student has unlocked this lecture (Sequential Progression)
@@ -298,23 +407,95 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
     return prevLecture.completedBy?.includes(currentUser.id) || false;
   };
 
-  // Open Quiz Modal
-  const handleOpenQuiz = (lecture: Lecture) => {
-    setQuizLecture(lecture);
-    setSelectedAnswers({});
-    setQuizSubmitted(false);
-    setQuizScore(null);
+  // Analyze an existing Lecture's YouTube video with AI & generate a tailored quiz
+  const handleAnalyzeExistingLecture = async (
+    lecture: Lecture,
+    options: { openQuizAfter?: boolean } = {}
+  ) => {
+    const targetUrl = lecture.youtubeUrl || lecture.videoUrl || '';
+    setAiError(null);
+    setAiStatusNotice(null);
+
+    if (!isYoutubeUrl(targetUrl)) {
+      setAiError('This lecture does not have a valid YouTube video URL for AI analysis.');
+      return;
+    }
+
+    setAiAnalyzingLectureId(lecture.id);
+    try {
+      const { analysis, questions } = await requestAiVideoAnalysis({
+        videoUrl: targetUrl,
+        title: lecture.title,
+        subject: lecture.subject,
+        classSec: lecture.classSec,
+        description: lecture.description,
+        keyPoints: lecture.keyPoints,
+        questionCount: 4,
+      });
+
+      const updatedQuiz: LectureQuiz = {
+        id: `quiz-ai-${Date.now()}`,
+        lectureId: lecture.id,
+        passThreshold: lecture.quiz?.passThreshold ?? lecture.quiz?.passPercentage ?? 75,
+        passPercentage: lecture.quiz?.passPercentage ?? lecture.quiz?.passThreshold ?? 75,
+        generatedByAi: true,
+        generatedAt: analysis.analyzedAt,
+        questions,
+      };
+
+      const nextKeyPoints =
+        analysis.keyConcepts.length > 0 ? analysis.keyConcepts : lecture.keyPoints;
+
+      await onUpdateLecture(lecture.id, {
+        aiAnalysis: analysis,
+        quiz: updatedQuiz,
+        keyPoints: nextKeyPoints,
+      });
+
+      const updatedLecture: Lecture = {
+        ...lecture,
+        aiAnalysis: analysis,
+        quiz: updatedQuiz,
+        keyPoints: nextKeyPoints,
+      };
+
+      if (activeLectureModal?.id === lecture.id) {
+        setActiveLectureModal(updatedLecture);
+      }
+      if (quizLecture?.id === lecture.id) {
+        setQuizLecture(updatedLecture);
+        setSelectedAnswers({});
+        setQuizSubmitted(false);
+        setQuizScore(null);
+      }
+
+      setAiStatusNotice(
+        `AI analyzed "${lecture.title}" and generated ${questions.length} video-based quiz questions.`
+      );
+
+      if (options.openQuizAfter) {
+        setActiveLectureModal(null);
+        setQuizLecture(updatedLecture);
+        setSelectedAnswers({});
+        setQuizSubmitted(false);
+        setQuizScore(null);
+      }
+    } catch (err: any) {
+      setAiError(err?.message || 'Failed to analyze YouTube lecture video with AI.');
+    } finally {
+      setAiAnalyzingLectureId(null);
+    }
   };
 
-  // Submit Quiz Answers & Enforce 75% Passing Threshold
-  const handleSubmitQuiz = async () => {
-    if (!quizLecture) return;
-
-    // Fallback quiz questions if lecture.quiz is not present
-    const questions: LectureQuizQuestion[] = quizLecture.quiz?.questions || [
+  // Fallback helper for quiz questions
+  const getQuizQuestionsForLecture = (lecture: Lecture): LectureQuizQuestion[] => {
+    if (lecture.quiz?.questions && lecture.quiz.questions.length > 0) {
+      return lecture.quiz.questions;
+    }
+    return [
       {
         id: 1,
-        question: `What fundamental law or principle was established in this ${quizLecture.subject} lecture?`,
+        question: `What fundamental law or principle was established in this ${lecture.subject} lecture on "${lecture.title}"?`,
         options: [
           'Conservation principles under ideal boundary conditions',
           'Random variance with no predictable equilibrium',
@@ -338,6 +519,18 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
       },
       {
         id: 3,
+        question: 'Why is zero-paper digital documentation emphasized for this topic?',
+        options: [
+          'It enables verifiable timestamps and environmental protection',
+          'It eliminates all examinations entirely',
+          'It prevents teachers from evaluating work',
+          'It reduces laboratory safety compliance',
+        ],
+        correctAnswerIndex: 0,
+        explanation: 'Digital recording ensures paperless sustainability and transparent institutional audit.',
+      },
+      {
+        id: 4,
         question: 'What practical laboratory experiment corresponds with this theoretical framework?',
         options: [
           'Direct calorimeter and energy balance observation',
@@ -346,21 +539,26 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
           'Purely intuitive observation',
         ],
         correctAnswerIndex: 0,
-        explanation: 'Empirical verification validates theoretical derivations with measurable data.',
-      },
-      {
-        id: 4,
-        question: 'Why is this topic essential for the upcoming term examination?',
-        options: [
-          'It provides the basis for 25% of numerical and theoretical questions',
-          'It is purely optional reading material',
-          'It is excluded from standardized assessment',
-          'It will not appear on question papers',
-        ],
-        correctAnswerIndex: 0,
-        explanation: 'Mastery of foundational chapters is essential for high percentile standing.',
+        explanation: 'Calorimetric validation verifies theoretical derivations with empirical data.',
       },
     ];
+  };
+
+  // Open Quiz Modal
+  const handleOpenQuiz = (lecture: Lecture) => {
+    setAiError(null);
+    setQuizLecture(lecture);
+    setSelectedAnswers({});
+    setQuizSubmitted(false);
+    setQuizScore(null);
+  };
+
+  // Submit Quiz Answers & Enforce 75% Passing Threshold
+  const handleSubmitQuiz = async () => {
+    if (!quizLecture) return;
+
+    const questions = getQuizQuestionsForLecture(quizLecture);
+
 
     let correctCount = 0;
     questions.forEach((q, idx) => {
@@ -400,9 +598,13 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
       {/* Top Banner & Action Header */}
       <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xl">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">
               Zero-Paper Digital Hub
+            </span>
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-violet-500/20 text-violet-300 border border-violet-500/30 flex items-center gap-1">
+              <Sparkles className="w-3 h-3" />
+              <span>AI Video Analyzer & Quiz</span>
             </span>
             <span className="text-xs text-slate-500">•</span>
             <span className="text-xs text-slate-400 font-medium">YouTube Video Lectures & Topic Quizzes</span>
@@ -412,7 +614,7 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
             <span>Classroom Video Lectures & Progression</span>
           </h1>
           <p className="text-xs text-slate-400 mt-1 max-w-2xl">
-            Watch faculty YouTube lectures, review key concepts, and complete the topic quiz with at least 75% to unlock the next lecture in the syllabus sequence.
+            Watch faculty YouTube lectures, run AI video analysis for instant concept summaries and tailored questions, and pass the topic quiz with at least 75% to unlock the next lecture.
           </p>
         </div>
 
@@ -427,6 +629,39 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
           </button>
         )}
       </div>
+
+      {/* Global AI Status / Error Banners */}
+      {aiStatusNotice && (
+        <div className="p-3.5 rounded-xl bg-violet-950/60 border border-violet-500/40 text-violet-200 text-xs flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-violet-400 shrink-0" />
+            <span>{aiStatusNotice}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAiStatusNotice(null)}
+            className="text-violet-300 hover:text-white p-1 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {aiError && !activeLectureModal && !quizLecture && (
+        <div className="p-3.5 rounded-xl bg-rose-950/70 border border-rose-700/60 text-rose-200 text-xs flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>{aiError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAiError(null)}
+            className="text-rose-300 hover:text-white p-1 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Student Progress Tracker Card */}
       {isStudent && (
@@ -548,6 +783,12 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
                     <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-rose-500/10 text-rose-300 border border-rose-500/20">
                       YouTube
                     </span>
+                    {(lecture.aiAnalysis || lecture.quiz?.generatedByAi) && (
+                      <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-violet-500/15 text-violet-300 border border-violet-500/30 flex items-center gap-1">
+                        <Sparkles className="w-2.5 h-2.5" />
+                        <span>AI Quiz</span>
+                      </span>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-1 text-[11px] text-slate-400">
@@ -560,6 +801,7 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
                 <h3
                   onClick={() => {
                     if (isUnlocked) {
+                      setAiError(null);
                       setActiveLectureModal(lecture);
                     }
                   }}
@@ -580,7 +822,7 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
                 {/* Key Points Preview */}
                 <div className="space-y-1 mb-4 bg-slate-950/60 p-2.5 rounded-xl border border-slate-800/80">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 flex items-center justify-between">
-                    <span>Key Concepts</span>
+                    <span>{lecture.aiAnalysis ? 'AI Key Concepts' : 'Key Concepts'}</span>
                     {isDone ? (
                       <span className="text-emerald-400 font-bold flex items-center gap-1">
                         <CheckCircle className="w-3 h-3" />
@@ -595,25 +837,30 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
                       <span className="text-indigo-400 font-bold">Quiz Required</span>
                     )}
                   </div>
-                  {lecture.keyPoints.slice(0, 2).map((pt, i) => (
-                    <div key={i} className="text-[11px] text-slate-300 flex items-start gap-1.5 line-clamp-1">
-                      <span className="text-indigo-400">•</span>
-                      <span>{pt}</span>
-                    </div>
-                  ))}
+                  {(lecture.aiAnalysis?.keyConcepts?.length ? lecture.aiAnalysis.keyConcepts : lecture.keyPoints)
+                    .slice(0, 2)
+                    .map((pt, i) => (
+                      <div key={i} className="text-[11px] text-slate-300 flex items-start gap-1.5 line-clamp-1">
+                        <span className="text-indigo-400">•</span>
+                        <span>{pt}</span>
+                      </div>
+                    ))}
                 </div>
               </div>
 
               {/* Bottom Footer Actions */}
-              <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs">
-                <div className="flex items-center gap-1.5 text-slate-400 text-[11px]">
-                  <UserIcon className="w-3.5 h-3.5 text-slate-500" />
-                  <span className="truncate max-w-[110px]">{lecture.teacherName}</span>
+              <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs gap-2">
+                <div className="flex items-center gap-1.5 text-slate-400 text-[11px] min-w-0">
+                  <UserIcon className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                  <span className="truncate max-w-[95px]">{lecture.teacherName}</span>
                 </div>
 
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 flex-wrap justify-end">
                   {!isUnlocked ? (
-                    <div className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-[11px] text-amber-400 font-semibold" title={`Pass Step ${index} quiz to unlock this lecture.`}>
+                    <div
+                      className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-[11px] text-amber-400 font-semibold"
+                      title={`Pass Step ${index} quiz to unlock this lecture.`}
+                    >
                       <Lock className="w-3.5 h-3.5" />
                       <span>Pass Step {index} First</span>
                     </div>
@@ -622,11 +869,36 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
                       {/* Watch Video Button */}
                       <button
                         type="button"
-                        onClick={() => setActiveLectureModal(lecture)}
-                        className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-[11px] flex items-center gap-1 shadow-md shadow-indigo-600/20 cursor-pointer"
+                        onClick={() => {
+                          setAiError(null);
+                          setActiveLectureModal(lecture);
+                        }}
+                        className="px-2.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-[11px] flex items-center gap-1 shadow-md shadow-indigo-600/20 cursor-pointer"
                       >
                         <Play className="w-3 h-3" />
                         <span>Watch</span>
+                      </button>
+
+                      {/* AI Analyze & Ask Quiz Quick Button */}
+                      <button
+                        type="button"
+                        disabled={aiAnalyzingLectureId === lecture.id}
+                        onClick={() =>
+                          handleAnalyzeExistingLecture(lecture, { openQuizAfter: isStudent })
+                        }
+                        title={
+                          isStudent
+                            ? 'AI analyzes this YouTube video and asks a tailored quiz'
+                            : 'Analyze video with AI and save tailored quiz questions'
+                        }
+                        className="px-2.5 py-1.5 rounded-xl bg-violet-600/90 hover:bg-violet-500 disabled:opacity-60 text-white font-semibold text-[11px] flex items-center gap-1 shadow-md shadow-violet-600/20 cursor-pointer"
+                      >
+                        {aiAnalyzingLectureId === lecture.id ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <Sparkles className="w-3 h-3" />
+                        )}
+                        <span>{aiAnalyzingLectureId === lecture.id ? 'Analyzing...' : 'AI Quiz'}</span>
                       </button>
 
                       {/* Take Quiz Button */}
@@ -634,14 +906,14 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
                         <button
                           type="button"
                           onClick={() => handleOpenQuiz(lecture)}
-                          className={`px-3 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1 transition cursor-pointer ${
+                          className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1 transition cursor-pointer ${
                             isDone
                               ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-700/60'
                               : 'bg-amber-600 hover:bg-amber-500 text-white shadow-md shadow-amber-600/20'
                           }`}
                         >
                           <HelpCircle className="w-3 h-3" />
-                          <span>{isDone ? 'Passed 75% ✓' : 'Topic Quiz'}</span>
+                          <span>{isDone ? 'Passed ✓' : 'Quiz'}</span>
                         </button>
                       )}
                     </>
@@ -657,18 +929,36 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
                       >
                         <Edit3 className="w-3 h-3" />
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (confirm(`Delete lecture "${lecture.title}"?`)) {
-                            onDeleteLecture(lecture.id);
-                          }
-                        }}
-                        className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-400 transition cursor-pointer"
-                        title="Delete Lecture"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
+                      {confirmDeleteId === lecture.id ? (
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onDeleteLecture(lecture.id);
+                              setConfirmDeleteId(null);
+                            }}
+                            className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold cursor-pointer"
+                          >
+                            Delete
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteId(null)}
+                            className="px-1.5 py-1 rounded-lg bg-slate-800 text-slate-300 text-[10px] cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteId(lecture.id)}
+                          className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-400 transition cursor-pointer"
+                          title="Delete Lecture"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -741,8 +1031,114 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
               )}
             </div>
 
-            {/* Details, Notes & Take Quiz Callout */}
+            {/* Details, AI Video Analysis & Take Quiz Callout */}
             <div className="p-4 sm:p-6 space-y-4">
+              {/* AI Video Analyzer & Quiz Panel */}
+              <div className="p-4 rounded-2xl bg-gradient-to-br from-violet-950/45 via-slate-950 to-indigo-950/40 border border-violet-500/35 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-bold text-white flex items-center gap-2">
+                      <Brain className="w-4 h-4 text-violet-400" />
+                      <span>AI Lecture Video Analyzer & Quiz Assistant</span>
+                      {activeLectureModal.aiAnalysis && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30">
+                          Video Analyzed
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Let AI analyze this YouTube video to summarize core takeaways and ask you conceptual quiz questions directly from the lesson.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      disabled={aiAnalyzingLectureId === activeLectureModal.id}
+                      onClick={() =>
+                        handleAnalyzeExistingLecture(activeLectureModal, {
+                          openQuizAfter: isStudent,
+                        })
+                      }
+                      className="px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-60 text-white text-xs font-bold shadow-lg shadow-violet-600/25 transition flex items-center gap-1.5 cursor-pointer"
+                    >
+                      {aiAnalyzingLectureId === activeLectureModal.id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                      <span>
+                        {aiAnalyzingLectureId === activeLectureModal.id
+                          ? 'Analyzing Video...'
+                          : isStudent
+                          ? 'Analyze Video & Ask AI Quiz'
+                          : activeLectureModal.aiAnalysis
+                          ? 'Re-analyze Video & Refresh Quiz'
+                          : 'Analyze Video & Generate Quiz'}
+                      </span>
+                    </button>
+
+                    {activeLectureModal.quiz?.generatedByAi && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const lec = activeLectureModal;
+                          setActiveLectureModal(null);
+                          handleOpenQuiz(lec);
+                        }}
+                        className="px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <HelpCircle className="w-3.5 h-3.5" />
+                        <span>Open AI Quiz ({activeLectureModal.quiz.questions.length} Qs)</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {aiAnalyzingLectureId === activeLectureModal.id && (
+                  <div className="p-3 rounded-xl bg-slate-900/80 border border-violet-500/30 text-xs text-violet-200 flex items-center gap-2.5">
+                    <Loader2 className="w-4 h-4 animate-spin text-violet-400 shrink-0" />
+                    <span>
+                      AI is analyzing the YouTube video narration and visuals to build summary notes and quiz questions...
+                    </span>
+                  </div>
+                )}
+
+                {aiError && (
+                  <div className="p-3 rounded-xl bg-rose-950/70 border border-rose-700/60 text-rose-200 text-xs flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span>{aiError}</span>
+                  </div>
+                )}
+
+                {activeLectureModal.aiAnalysis && (
+                  <div className="pt-2 border-t border-violet-500/20 space-y-2.5 text-xs">
+                    <div>
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-violet-300 mb-1">
+                        AI Video Summary
+                      </div>
+                      <p className="text-slate-200 leading-relaxed">
+                        {activeLectureModal.aiAnalysis.videoSummary}
+                      </p>
+                    </div>
+
+                    {activeLectureModal.aiAnalysis.topicsCovered &&
+                      activeLectureModal.aiAnalysis.topicsCovered.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {activeLectureModal.aiAnalysis.topicsCovered.map((topic, idx) => (
+                            <span
+                              key={idx}
+                              className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-violet-500/15 text-violet-200 border border-violet-500/30"
+                            >
+                              {topic}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                  </div>
+                )}
+              </div>
+
               <div>
                 <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
                   Lecture Synopsis
@@ -787,7 +1183,9 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
                         </div>
                         <button
                           type="button"
-                          onClick={() => alert(`Downloading verified digital lecture slide: ${res.name}`)}
+                          onClick={() =>
+                            setAiStatusNotice(`Prepared digital lecture handout: ${res.name}`)
+                          }
                           className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition cursor-pointer"
                           title="Download handout"
                         >
@@ -842,16 +1240,26 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
       {/* =========================================================================
           INTERACTIVE TOPIC QUIZ MODAL (Enforces ≥ 75% Passing Threshold)
           ========================================================================= */}
-      {quizLecture && (
+      {quizLecture && (() => {
+        const activeQuestions = getQuizQuestionsForLecture(quizLecture);
+        const totalQuestions = activeQuestions.length;
+
+        return (
         <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto text-slate-100 shadow-2xl p-6">
             {/* Header */}
-            <div className="flex items-start justify-between border-b border-slate-800 pb-4 mb-4">
+            <div className="flex items-start justify-between border-b border-slate-800 pb-4 mb-4 gap-3">
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="px-2.5 py-0.5 rounded text-[10px] font-extrabold uppercase bg-amber-500/20 text-amber-400 border border-amber-500/30">
                     Topic Mastery Quiz
                   </span>
+                  {quizLecture.quiz?.generatedByAi && (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-extrabold uppercase bg-violet-500/20 text-violet-300 border border-violet-500/30 flex items-center gap-1">
+                      <Sparkles className="w-3 h-3" />
+                      <span>AI Video Quiz</span>
+                    </span>
+                  )}
                   <span className="text-xs text-slate-400">{quizLecture.subject}</span>
                   <span className="text-xs font-bold text-amber-300">Passing Threshold: 75%</span>
                 </div>
@@ -859,18 +1267,58 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
                   Quiz on: {quizLecture.title}
                 </h2>
                 <div className="text-xs text-slate-400 mt-0.5">
-                  Answer all 4 conceptual questions. If you fail (&lt; 75%), you will not be allowed to proceed to the next step.
+                  Answer all {totalQuestions} conceptual questions. If you fail (&lt; 75%), you will not be allowed to proceed to the next step.
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={() => setQuizLecture(null)}
-                className="p-1.5 text-slate-400 hover:text-white rounded-xl bg-slate-800 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={aiAnalyzingLectureId === quizLecture.id}
+                  onClick={() => handleAnalyzeExistingLecture(quizLecture)}
+                  className="px-3 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-60 text-white text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shadow-md shadow-violet-600/20"
+                  title="Have AI analyze the lecture video and ask a fresh set of questions"
+                >
+                  {aiAnalyzingLectureId === quizLecture.id ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="w-3.5 h-3.5" />
+                  )}
+                  <span>
+                    {aiAnalyzingLectureId === quizLecture.id
+                      ? 'Analyzing Video...'
+                      : 'Ask Fresh AI Quiz from Video'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setQuizLecture(null)}
+                  className="p-1.5 text-slate-400 hover:text-white rounded-xl bg-slate-800 cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
+
+            {aiError && (
+              <div className="mb-4 p-3 rounded-xl bg-rose-950/70 border border-rose-700/60 text-rose-200 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{aiError}</span>
+              </div>
+            )}
+
+            {quizLecture.aiAnalysis?.videoSummary && (
+              <div className="mb-4 p-3.5 rounded-xl bg-violet-950/35 border border-violet-500/30 text-xs">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-violet-300 flex items-center gap-1.5 mb-1">
+                  <Brain className="w-3.5 h-3.5" />
+                  <span>AI Video Analysis Context</span>
+                </div>
+                <p className="text-slate-300 leading-relaxed">
+                  {quizLecture.aiAnalysis.videoSummary}
+                </p>
+              </div>
+            )}
 
             {/* Quiz Result Banner */}
             {quizSubmitted && quizScore && (
@@ -890,8 +1338,8 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
                   <div>
                     <h3 className="text-sm font-bold text-white">
                       {quizScore.passed
-                        ? `🎉 Congratulations! You Passed (${quizScore.percentage}% - ${quizScore.correct}/${quizScore.total} Correct)`
-                        : `❌ Quiz Failed: Score ${quizScore.percentage}% (${quizScore.correct}/${quizScore.total} Correct)`}
+                        ? `Congratulations! You Passed (${quizScore.percentage}% - ${quizScore.correct}/${quizScore.total} Correct)`
+                        : `Quiz Failed: Score ${quizScore.percentage}% (${quizScore.correct}/${quizScore.total} Correct)`}
                     </h3>
                     <p className="text-xs mt-1 leading-relaxed">
                       {quizScore.passed
@@ -921,7 +1369,7 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
                           setQuizLecture(null);
                           setActiveLectureModal(lec);
                         }}
-                        className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold"
+                        className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold cursor-pointer"
                       >
                         Rewatch YouTube Video
                       </button>
@@ -933,56 +1381,7 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
 
             {/* Questions List */}
             <div className="space-y-5">
-              {(quizLecture.quiz?.questions || [
-                {
-                  id: 1,
-                  question: `What fundamental law or principle was established in this ${quizLecture.subject} lecture on "${quizLecture.title}"?`,
-                  options: [
-                    'Conservation principles under ideal boundary conditions',
-                    'Random variance with no predictable equilibrium',
-                    'Arbitrary scalar transformation',
-                    'Linear degradation over infinite cycles',
-                  ],
-                  correctAnswerIndex: 0,
-                  explanation: 'The core syllabus principle reinforces conservation and foundational equations.',
-                },
-                {
-                  id: 2,
-                  question: 'What is the primary mathematical relationship derived in this video?',
-                  options: [
-                    'Inverse logarithmic ratio',
-                    'Direct proportional relationship with boundary limits',
-                    'Uncorrelated stochastic distribution',
-                    'Static coefficient invariant',
-                  ],
-                  correctAnswerIndex: 1,
-                  explanation: 'As demonstrated in the lecture proof, proportional constraints define the relationship.',
-                },
-                {
-                  id: 3,
-                  question: 'Why is zero-paper digital documentation emphasized for this topic?',
-                  options: [
-                    'It enables verifiable timestamps and environmental protection',
-                    'It eliminates all examinations entirely',
-                    'It prevents teachers from evaluating work',
-                    'It reduces laboratory safety compliance',
-                  ],
-                  correctAnswerIndex: 0,
-                  explanation: 'Digital recording ensures paperless sustainability and transparent institutional audit.',
-                },
-                {
-                  id: 4,
-                  question: 'What practical laboratory experiment corresponds with this theoretical framework?',
-                  options: [
-                    'Direct calorimeter and energy balance observation',
-                    'Uncalibrated open system trial',
-                    'Hypothetical mental conjecture without measurement',
-                    'Purely intuitive observation',
-                  ],
-                  correctAnswerIndex: 0,
-                  explanation: 'Calorimetric validation verifies theoretical derivations with empirical data.',
-                },
-              ]).map((q, qIdx) => {
+              {activeQuestions.map((q, qIdx) => {
                 const userChoice = selectedAnswers[qIdx];
                 const targetAns = q.correctAnswerIndex ?? q.correctOption ?? 0;
                 const isCorrect = quizSubmitted && userChoice === targetAns;
@@ -1003,13 +1402,13 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
                   >
                     <div className="flex items-center justify-between text-xs font-bold text-white mb-2">
                       <span className="flex items-center gap-2">
-                        <span className="w-5 h-5 rounded-full bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 flex items-center justify-center text-[10px]">
+                        <span className="w-5 h-5 rounded-full bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 flex items-center justify-center text-[10px] shrink-0">
                           {qIdx + 1}
                         </span>
                         <span>{q.question}</span>
                       </span>
                       {quizSubmitted && (
-                        <span>
+                        <span className="shrink-0 ml-2">
                           {isCorrect && <span className="text-emerald-400 font-bold">✓ Correct</span>}
                           {isWrong && <span className="text-rose-400 font-bold">✗ Incorrect</span>}
                         </span>
@@ -1068,7 +1467,7 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
             {/* Quiz Submit Bar */}
             <div className="mt-6 pt-4 border-t border-slate-800 flex items-center justify-between">
               <div className="text-xs text-slate-400">
-                {Object.keys(selectedAnswers).length} of 4 answered
+                {Object.keys(selectedAnswers).length} of {totalQuestions} answered
               </div>
 
               <div className="flex items-center gap-2">
@@ -1084,7 +1483,7 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
                   <button
                     type="button"
                     onClick={handleSubmitQuiz}
-                    disabled={Object.keys(selectedAnswers).length < 4}
+                    disabled={Object.keys(selectedAnswers).length < totalQuestions}
                     className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-lg shadow-indigo-600/30 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Submit Quiz Answers
@@ -1104,7 +1503,8 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* =========================================================================
           TEACHER ADD / EDIT LECTURE MODAL (Strictly Enforces YouTube Video Only)
@@ -1153,23 +1553,50 @@ export const LecturesView: React.FC<LecturesViewProps> = ({
                 />
               </div>
 
-              {/* Strict YouTube Video URL Input */}
-              <div className="p-3.5 bg-rose-950/20 border border-rose-800/40 rounded-xl space-y-1.5">
+              {/* Strict YouTube Video URL Input + AI Video Analyzer */}
+              <div className="p-3.5 bg-rose-950/20 border border-rose-800/40 rounded-xl space-y-2">
                 <label className="block text-[11px] font-extrabold text-rose-300 uppercase tracking-wider flex items-center gap-1.5">
                   <Video className="w-3.5 h-3.5 text-rose-400" />
                   <span>YouTube Video Link (Required)</span>
                 </label>
-                <input
-                  type="url"
-                  required
-                  value={formVideoUrl}
-                  onChange={(e) => setFormVideoUrl(e.target.value)}
-                  placeholder="https://www.youtube.com/watch?v=..."
-                  className="w-full px-3 py-2 bg-slate-950 border border-rose-800/50 rounded-xl text-white outline-none focus:border-rose-500 font-mono text-[11px]"
-                />
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="url"
+                    required
+                    value={formVideoUrl}
+                    onChange={(e) => setFormVideoUrl(e.target.value)}
+                    placeholder="https://www.youtube.com/watch?v=..."
+                    className="flex-1 px-3 py-2 bg-slate-950 border border-rose-800/50 rounded-xl text-white outline-none focus:border-rose-500 font-mono text-[11px]"
+                  />
+                  <button
+                    type="button"
+                    disabled={isAnalyzingFormVideo}
+                    onClick={handleAnalyzeFormVideo}
+                    className="px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-60 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 shrink-0 cursor-pointer shadow-md shadow-violet-600/20"
+                  >
+                    {isAnalyzingFormVideo ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Sparkles className="w-3.5 h-3.5" />
+                    )}
+                    <span>{isAnalyzingFormVideo ? 'Analyzing Video...' : 'Analyze Video & Build AI Quiz'}</span>
+                  </button>
+                </div>
                 <p className="text-[10px] text-slate-400">
-                  Institutional policy: Teachers are only able to add YouTube video links (e.g. watch URLs or youtu.be links).
+                  Institutional policy: Only YouTube video links are permitted. Click "Analyze Video & Build AI Quiz" to let AI watch the video, fill concepts, and generate a custom quiz.
                 </p>
+
+                {formAiQuiz && formAiAnalysis && (
+                  <div className="mt-2 p-2.5 rounded-xl bg-violet-950/40 border border-violet-500/35 text-[11px] text-violet-200 space-y-1">
+                    <div className="font-bold flex items-center gap-1.5 text-violet-300">
+                      <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>
+                        AI Video Analysis Ready ({formAiQuiz.questions.length} tailored quiz questions generated)
+                      </span>
+                    </div>
+                    <p className="text-slate-300 line-clamp-2">{formAiAnalysis.videoSummary}</p>
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-3">

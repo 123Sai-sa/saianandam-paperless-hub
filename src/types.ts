@@ -238,6 +238,17 @@ export interface LectureQuiz {
   questions: LectureQuizQuestion[];
   passPercentage?: number;
   passThreshold?: number;
+  generatedByAi?: boolean;
+  generatedAt?: string;
+}
+
+export interface LectureAiAnalysis {
+  videoSummary: string;
+  keyConcepts: string[];
+  topicsCovered?: string[];
+  analyzedAt: string;
+  analyzedVideoUrl?: string;
+  model?: string;
 }
 
 export interface Lecture {
@@ -258,6 +269,7 @@ export interface Lecture {
   completedBy: string[]; // student IDs who finished/viewed
   quiz?: LectureQuiz;
   quizPassedBy?: string[]; // student IDs who passed the topic quiz
+  aiAnalysis?: LectureAiAnalysis;
   status: 'published' | 'draft';
 }
 

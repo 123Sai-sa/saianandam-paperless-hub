@@ -162,12 +162,16 @@
         "title": { "type": "string", "maxLength": 200 },
         "subject": { "type": "string", "maxLength": 64 },
         "gradeClass": { "type": "string", "maxLength": 32 },
+        "classSec": { "type": "string", "maxLength": 32 },
         "teacherId": { "type": "string", "maxLength": 128 },
         "teacherName": { "type": "string", "maxLength": 128 },
         "description": { "type": "string", "maxLength": 2000 },
         "videoUrl": { "type": "string", "maxLength": 500 },
+        "youtubeUrl": { "type": "string", "maxLength": 500 },
         "durationMinutes": { "type": "number" },
         "notesPdfUrl": { "type": "string", "maxLength": 500 },
+        "aiAnalysis": { "type": "object" },
+        "quiz": { "type": "object" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "title", "subject", "gradeClass", "teacherName", "createdAt"]
