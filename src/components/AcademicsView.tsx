@@ -22,6 +22,9 @@ import {
   Save,
   Check,
   Lock,
+  Calendar,
+  SlidersHorizontal,
+  Plus,
 } from 'lucide-react';
 import { StudentGrade, AcademicSubject, ExamTerm, User, ALL_INSTITUTIONAL_CLASSES } from '../types';
 import { INITIAL_SUBJECTS, INITIAL_EXAM_TERMS } from '../data/sdbmsInitialData';
@@ -30,6 +33,10 @@ interface AcademicsViewProps {
   grades: StudentGrade[];
   users?: User[];
   currentUser: User;
+  subjects?: AcademicSubject[];
+  examTerms?: ExamTerm[];
+  onSaveSubjects?: (subjects: AcademicSubject[]) => Promise<AcademicSubject[]>;
+  onSaveExamTerms?: (terms: ExamTerm[]) => Promise<ExamTerm[]>;
   onUpdateGrade: (grade: StudentGrade) => Promise<StudentGrade>;
   onBulkUpdateGrades: (grades: StudentGrade[]) => Promise<StudentGrade[]>;
   onAddGrade?: (gradeData: Omit<StudentGrade, 'id' | 'lastUpdated'>) => Promise<StudentGrade>;
@@ -42,6 +49,10 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
   grades,
   users = [],
   currentUser,
+  subjects = INITIAL_SUBJECTS,
+  examTerms = INITIAL_EXAM_TERMS,
+  onSaveSubjects,
+  onSaveExamTerms,
   onUpdateGrade,
   onBulkUpdateGrades,
   onAddGrade,
@@ -49,7 +60,6 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
   onRefreshGrades,
   onOpenAiDiagnostic,
 }) => {
-  const subjects = INITIAL_SUBJECTS;
   const isTeacherOrAdmin = ['admin', 'teacher'].includes(currentUser.role);
   const isStudent = currentUser.role === 'student';
 
@@ -86,8 +96,16 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
     return 'Class 10-A';
   }, [currentUser, availableClasses]);
 
+  const buildDefaultScores = (subjectList: AcademicSubject[]): Record<string, number> => {
+    const map: Record<string, number> = {};
+    subjectList.forEach((s) => {
+      map[s.id] = Math.round((s.maxMarks || 100) * 0.8);
+    });
+    return map;
+  };
+
   const [selectedClass, setSelectedClass] = useState<string>(defaultClass);
-  const [selectedTerm, setSelectedTerm] = useState(isStudent ? 'ALL' : 'term-half');
+  const [selectedTerm, setSelectedTerm] = useState(isStudent ? 'ALL' : (examTerms[0]?.id || 'term-half'));
   const [searchQuery, setSearchQuery] = useState('');
   const [editingGrade, setEditingGrade] = useState<StudentGrade | null>(null);
   const [reportCardStudent, setReportCardStudent] = useState<StudentGrade | null>(null);
@@ -98,19 +116,32 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
 
+  // Subject Manager Modal State (Admin & Teacher only)
+  const [isSubjectModalOpen, setIsSubjectModalOpen] = useState(false);
+  const [subjectsDraft, setSubjectsDraft] = useState<AcademicSubject[]>(subjects);
+  const [newSubjectName, setNewSubjectName] = useState('');
+  const [newSubjectCode, setNewSubjectCode] = useState('');
+  const [newSubjectMax, setNewSubjectMax] = useState(100);
+  const [newSubjectPass, setNewSubjectPass] = useState(40);
+  const [subjectFormError, setSubjectFormError] = useState<string | null>(null);
+  const [isSavingSubjects, setIsSavingSubjects] = useState(false);
+
+  // Exam Term Manager Modal State (Admin & Teacher only)
+  const [isTermModalOpen, setIsTermModalOpen] = useState(false);
+  const [termsDraft, setTermsDraft] = useState<ExamTerm[]>(examTerms);
+  const [newTermName, setNewTermName] = useState('');
+  const [newTermYear, setNewTermYear] = useState('2026-27');
+  const [newTermStatus, setNewTermStatus] = useState<ExamTerm['status']>('active');
+  const [termFormError, setTermFormError] = useState<string | null>(null);
+  const [isSavingTerms, setIsSavingTerms] = useState(false);
+
   // Form State for Adding New Marksheet
   const [newStudentId, setNewStudentId] = useState('');
   const [newStudentName, setNewStudentName] = useState('');
   const [newRollNo, setNewRollNo] = useState('');
   const [newClassSec, setNewClassSec] = useState(selectedClass === 'ALL' ? 'Class 10-A' : selectedClass);
-  const [newScores, setNewScores] = useState<Record<string, number>>({
-    'sub-math': 80,
-    'sub-phys': 80,
-    'sub-chem': 80,
-    'sub-eng': 85,
-    'sub-cs': 85,
-    'sub-soc': 80,
-  });
+  const [newExamTermId, setNewExamTermId] = useState(examTerms[0]?.id || 'term-half');
+  const [newScores, setNewScores] = useState<Record<string, number>>(() => buildDefaultScores(subjects));
   const [newRemarks, setNewRemarks] = useState('Satisfactory performance with consistent exam effort.');
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -150,41 +181,66 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
     });
   }, [grades, currentUser, isStudent, selectedClass, selectedTerm, searchQuery]);
 
-  // Helper to resolve readable subject labels (standard + legacy/custom keys)
-  const getSubjectDisplayName = (subKey: string): string => {
+  // Helper to resolve subject metadata (name, maxMarks, passMarks) from configured subjects
+  const getSubjectMeta = (subKey: string): { name: string; maxMarks: number; passMarks: number } => {
     const preset = subjects.find((s) => s.id === subKey);
-    if (preset) return preset.name;
+    if (preset) {
+      return {
+        name: preset.name,
+        maxMarks: preset.maxMarks || 100,
+        passMarks: preset.passMarks || 40,
+      };
+    }
     const legacyMap: Record<string, string> = {
       sub_math: 'Mathematics',
       sub_eng: 'English Literature',
       sub_sci: 'General Science',
-      sub_soc: 'Social Sciences',
+      sub_soc: 'Social Studies',
       sub_san: 'Sanskrit & Values',
       sub_yoga: 'Yoga & Wellness',
     };
-    if (legacyMap[subKey]) return legacyMap[subKey];
-    return subKey.replace(/^sub-custom-/, '').replace(/^sub[-_]/, '').replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    const name =
+      legacyMap[subKey] ||
+      subKey
+        .replace(/^sub-custom-/, '')
+        .replace(/^sub[-_]/, '')
+        .replace(/[-_]/g, ' ')
+        .replace(/\b\w/g, (c) => c.toUpperCase());
+    return { name, maxMarks: 100, passMarks: 40 };
+  };
+
+  const getSubjectDisplayName = (subKey: string): string => getSubjectMeta(subKey).name;
+
+  const getTermDisplayName = (termId?: string): string => {
+    if (!termId || termId === 'ALL') return 'All Exam Terms';
+    return examTerms.find((t) => t.id === termId)?.name || termId;
   };
 
   // Student personal summary derived from their active marksheet
   const studentPrimaryGrade = isStudent ? displayedGrades[0] || null : null;
   const studentTopSubject = useMemo(() => {
     if (!studentPrimaryGrade || !studentPrimaryGrade.scores) return null;
-    const entries = Object.entries(studentPrimaryGrade.scores);
+    const entries = Object.entries(studentPrimaryGrade.scores).map(([subKey, val]) => {
+      const meta = getSubjectMeta(subKey);
+      const score = Number(val || 0);
+      const pct = meta.maxMarks > 0 ? (score / meta.maxMarks) * 100 : 0;
+      return { name: meta.name, score, maxMarks: meta.maxMarks, pct };
+    });
     if (entries.length === 0) return null;
-    const sorted = [...entries].sort((a, b) => Number(b[1]) - Number(a[1]));
-    return {
-      name: getSubjectDisplayName(sorted[0][0]),
-      score: Number(sorted[0][1]),
-    };
-  }, [studentPrimaryGrade]);
+    const sorted = [...entries].sort((a, b) => b.pct - a.pct);
+    return sorted[0];
+  }, [studentPrimaryGrade, subjects]);
 
-  // Performance calculations
+  // Performance calculations respecting each subject's maxMarks
   const calculateDerived = (scores: Record<string, number>) => {
-    const total = Object.values(scores).reduce((a, b) => a + Number(b || 0), 0);
-    const subjectCount = Math.max(Object.keys(scores).length, 1);
-    const max = subjectCount * 100;
-    const percentage = Number(((total / max) * 100).toFixed(2));
+    const entries = Object.entries(scores);
+    const total = entries.reduce((a, [, b]) => a + Number(b || 0), 0);
+    const max =
+      entries.length > 0
+        ? entries.reduce((a, [subKey]) => a + getSubjectMeta(subKey).maxMarks, 0)
+        : 100;
+    const safeMax = Math.max(max, 1);
+    const percentage = Number(((total / safeMax) * 100).toFixed(2));
     const gpa = Number(((percentage / 100) * 10).toFixed(1));
 
     let grade: 'A+' | 'A' | 'B+' | 'B' | 'C' | 'D' | 'F' = 'F';
@@ -196,7 +252,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
     else if (percentage >= 40) grade = 'D';
 
     const status: 'pass' | 'fail' = percentage >= 40 ? 'pass' : 'fail';
-    return { total, max, percentage, gpa, grade, status };
+    return { total, max: safeMax, percentage, gpa, grade, status };
   };
 
   // Class analytics for selected class
@@ -240,7 +296,8 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
   // Handle score change in single edit modal
   const handleScoreChange = (subId: string, val: number) => {
     if (!editingGrade) return;
-    const scoreVal = Math.min(100, Math.max(0, val));
+    const maxAllowed = getSubjectMeta(subId).maxMarks;
+    const scoreVal = Math.min(maxAllowed, Math.max(0, val));
     const newScoresObj = { ...editingGrade.scores, [subId]: scoreVal };
     const derived = calculateDerived(newScoresObj);
     setEditingGrade({
@@ -319,6 +376,129 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
     }
   };
 
+  // Subject & Exam Term Management Handlers (Admin & Teacher Only)
+  const handleOpenSubjectManager = () => {
+    if (!isTeacherOrAdmin) return;
+    setSubjectsDraft(subjects.map((s) => ({ ...s })));
+    setNewSubjectName('');
+    setNewSubjectCode('');
+    setNewSubjectMax(100);
+    setNewSubjectPass(40);
+    setSubjectFormError(null);
+    setIsSubjectModalOpen(true);
+  };
+
+  const handleAddSubjectDraft = () => {
+    const trimmed = newSubjectName.trim();
+    if (!trimmed) {
+      setSubjectFormError('Enter a subject name before adding.');
+      return;
+    }
+    if (subjectsDraft.some((s) => s.name.trim().toLowerCase() === trimmed.toLowerCase())) {
+      setSubjectFormError(`Subject "${trimmed}" already exists.`);
+      return;
+    }
+    const maxVal = Math.max(10, Math.min(500, Number(newSubjectMax) || 100));
+    const passVal = Math.max(1, Math.min(maxVal, Number(newSubjectPass) || 40));
+    const slug = trimmed.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 14);
+    const newItem: AcademicSubject = {
+      id: `sub-${slug || 'custom'}-${Date.now().toString(36).slice(-4)}`,
+      name: trimmed,
+      code: (newSubjectCode.trim() || `${trimmed.slice(0, 4).toUpperCase()}-101`).toUpperCase(),
+      maxMarks: maxVal,
+      passMarks: passVal,
+    };
+    setSubjectsDraft((prev) => [...prev, newItem]);
+    setNewSubjectName('');
+    setNewSubjectCode('');
+    setNewSubjectMax(100);
+    setNewSubjectPass(40);
+    setSubjectFormError(null);
+  };
+
+  const handleSaveSubjectsModal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isTeacherOrAdmin || !onSaveSubjects) return;
+    const valid = subjectsDraft.filter((s) => s.name.trim().length > 0);
+    if (valid.length === 0) {
+      setSubjectFormError('At least one institutional subject is required.');
+      return;
+    }
+    setIsSavingSubjects(true);
+    setSubjectFormError(null);
+    try {
+      const saved = await onSaveSubjects(valid);
+      setNewScores(buildDefaultScores(saved));
+      setIsSubjectModalOpen(false);
+      setSyncNotice(`✅ Saved ${saved.length} institutional subjects to Cloud Firestore DB.`);
+      setTimeout(() => setSyncNotice(null), 3500);
+    } catch (err: any) {
+      setSubjectFormError(err?.message || 'Failed to save subjects.');
+    } finally {
+      setIsSavingSubjects(false);
+    }
+  };
+
+  const handleOpenTermManager = () => {
+    if (!isTeacherOrAdmin) return;
+    setTermsDraft(examTerms.map((t) => ({ ...t })));
+    setNewTermName('');
+    setNewTermYear('2026-27');
+    setNewTermStatus('active');
+    setTermFormError(null);
+    setIsTermModalOpen(true);
+  };
+
+  const handleAddTermDraft = () => {
+    const trimmed = newTermName.trim();
+    if (!trimmed) {
+      setTermFormError('Enter an exam term name before adding.');
+      return;
+    }
+    if (termsDraft.some((t) => t.name.trim().toLowerCase() === trimmed.toLowerCase())) {
+      setTermFormError(`Exam term "${trimmed}" already exists.`);
+      return;
+    }
+    const slug = trimmed.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 14);
+    const newItem: ExamTerm = {
+      id: `term-${slug || 'exam'}-${Date.now().toString(36).slice(-4)}`,
+      name: trimmed,
+      academicYear: newTermYear.trim() || '2026-27',
+      status: newTermStatus,
+    };
+    setTermsDraft((prev) => [...prev, newItem]);
+    setNewTermName('');
+    setTermFormError(null);
+  };
+
+  const handleSaveTermsModal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isTeacherOrAdmin || !onSaveExamTerms) return;
+    const valid = termsDraft.filter((t) => t.name.trim().length > 0);
+    if (valid.length === 0) {
+      setTermFormError('At least one exam term is required.');
+      return;
+    }
+    setIsSavingTerms(true);
+    setTermFormError(null);
+    try {
+      const saved = await onSaveExamTerms(valid);
+      if (selectedTerm !== 'ALL' && !saved.some((t) => t.id === selectedTerm)) {
+        setSelectedTerm(saved[0]?.id || 'ALL');
+      }
+      if (!saved.some((t) => t.id === newExamTermId)) {
+        setNewExamTermId(saved[0]?.id || 'term-half');
+      }
+      setIsTermModalOpen(false);
+      setSyncNotice(`✅ Saved ${saved.length} exam terms to Cloud Firestore DB.`);
+      setTimeout(() => setSyncNotice(null), 3500);
+    } catch (err: any) {
+      setTermFormError(err?.message || 'Failed to save exam terms.');
+    } finally {
+      setIsSavingTerms(false);
+    }
+  };
+
   // Submit New Marksheet
   const handleCreateNewGrade = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -329,13 +509,14 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
       return;
     }
 
+    const activeTermId = newExamTermId || (selectedTerm !== 'ALL' ? selectedTerm : examTerms[0]?.id || 'term-half');
     const derived = calculateDerived(newScores);
     const gradePayload: Omit<StudentGrade, 'id' | 'lastUpdated'> = {
       studentId: newStudentId || `u-stud-${Date.now().toString(36)}`,
       studentName: newStudentName.trim(),
       rollNo: newRollNo.trim(),
       classSec: newClassSec,
-      examTermId: selectedTerm,
+      examTermId: activeTermId,
       scores: newScores,
       totalMarks: derived.total,
       maxPossible: derived.max,
@@ -380,7 +561,8 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
   };
 
   const handleQuickScoreChange = (gradeId: string, subId: string, val: number) => {
-    const cleanVal = Math.min(100, Math.max(0, val));
+    const maxAllowed = getSubjectMeta(subId).maxMarks;
+    const cleanVal = Math.min(maxAllowed, Math.max(0, val));
     setQuickScores((prev) => ({
       ...prev,
       [gradeId]: {
@@ -517,6 +699,30 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
 
           {isTeacherOrAdmin && (
             <>
+              {onSaveSubjects && (
+                <button
+                  type="button"
+                  onClick={handleOpenSubjectManager}
+                  className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                  title="Add, rename, or configure institutional subjects and max marks"
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Edit Subjects</span>
+                </button>
+              )}
+
+              {onSaveExamTerms && (
+                <button
+                  type="button"
+                  onClick={handleOpenTermManager}
+                  className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                  title="Add, rename, or update exam terms"
+                >
+                  <Calendar className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Edit Exam Terms</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={handleToggleQuickEdit}
@@ -535,6 +741,8 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                 type="button"
                 onClick={() => {
                   setNewClassSec(selectedClass === 'ALL' ? 'Class 10-A' : selectedClass);
+                  setNewExamTermId(selectedTerm !== 'ALL' ? selectedTerm : (examTerms[0]?.id || 'term-half'));
+                  setNewScores(buildDefaultScores(subjects));
                   setIsAddModalOpen(true);
                 }}
                 className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-md shadow-amber-500/20"
@@ -683,12 +891,22 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                 className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white outline-none focus:border-indigo-500 cursor-pointer font-medium"
               >
                 <option value="ALL">All Exam Terms</option>
-                {INITIAL_EXAM_TERMS.map((t) => (
+                {examTerms.map((t) => (
                   <option key={t.id} value={t.id}>
-                    {t.name}
+                    {t.name} ({t.academicYear})
                   </option>
                 ))}
               </select>
+              {isTeacherOrAdmin && onSaveExamTerms && (
+                <button
+                  type="button"
+                  onClick={handleOpenTermManager}
+                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-amber-300 transition cursor-pointer"
+                  title="Edit Exam Terms"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
 
             {/* Student Search (Faculty/Admin only) */}
@@ -764,7 +982,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                       {studentTopSubject.name}
                     </span>
                     <span className="text-[10px] text-emerald-400 font-mono">
-                      {studentTopSubject.score} / 100
+                      {studentTopSubject.score} / {studentTopSubject.maxMarks}
                     </span>
                   </>
                 ) : (
@@ -825,7 +1043,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                       {classAnalytics.topper.studentName}
                     </span>
                     <span className="text-[10px] text-emerald-400 font-mono">
-                      {classAnalytics.topper.totalMarks}/600 ({classAnalytics.topper.percentage}%) • GPA {classAnalytics.topper.gpa}
+                      {classAnalytics.topper.totalMarks}/{classAnalytics.topper.maxPossible} ({classAnalytics.topper.percentage}%) • GPA {classAnalytics.topper.gpa}
                     </span>
                   </>
                 ) : (
@@ -887,9 +1105,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
           <div className="text-[11px] text-slate-400">
             Term:{' '}
             <strong className="text-white">
-              {selectedTerm === 'ALL'
-                ? 'All Exam Terms'
-                : INITIAL_EXAM_TERMS.find((t) => t.id === selectedTerm)?.name || selectedTerm}
+              {getTermDisplayName(selectedTerm)}
             </strong>
           </div>
         </div>
@@ -902,8 +1118,8 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                 <th className="py-3 px-4">Student Name & Class</th>
                 {subjects.map((sub) => (
                   <th key={sub.id} className="py-3 px-2.5 text-center">
-                    <span className="block truncate max-w-[85px]">{sub.name.split(' ')[0]}</span>
-                    <span className="block text-[9px] text-slate-500 font-normal">Max: 100</span>
+                    <span className="block truncate max-w-[95px]" title={sub.name}>{sub.name.split(' ')[0]}</span>
+                    <span className="block text-[9px] text-slate-500 font-normal">Max: {sub.maxMarks}</span>
                   </th>
                 ))}
                 <th className="py-3 px-3 text-center">Total</th>
@@ -921,7 +1137,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                     <p className="text-sm font-semibold text-slate-400">
                       {isStudent
                         ? 'No marksheet has been recorded for your profile in this term yet.'
-                        : `No marksheet records found for ${selectedClass} in ${selectedTerm}.`}
+                        : `No marksheet records found for ${selectedClass} in ${getTermDisplayName(selectedTerm)}.`}
                     </p>
                     <p className="text-xs text-slate-600 mt-1">
                       {isStudent
@@ -948,12 +1164,16 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                             <span>{g.studentName}</span>
                             <Edit3 className="w-3.5 h-3.5 text-slate-500 group-hover:text-amber-400 transition" />
                           </div>
-                          <div className="text-[10px] text-amber-400/90 font-medium">{g.classSec} • Click name to edit marks</div>
+                          <div className="text-[10px] text-amber-400/90 font-medium">
+                            {g.classSec} • {getTermDisplayName(g.examTermId)} • Click to edit
+                          </div>
                         </button>
                       ) : (
                         <div>
                           <div className="font-bold text-white text-sm">{g.studentName}</div>
-                          <div className="text-[10px] text-amber-400/90 font-medium">{g.classSec}</div>
+                          <div className="text-[10px] text-amber-400/90 font-medium">
+                            {g.classSec} • {getTermDisplayName(g.examTermId)}
+                          </div>
                         </div>
                       )}
                     </td>
@@ -962,6 +1182,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                       const currentScore = isQuickEditMode
                         ? quickScores[g.id]?.[sub.id] ?? g.scores[sub.id] ?? 0
                         : g.scores[sub.id] ?? 0;
+                      const pct = sub.maxMarks > 0 ? (currentScore / sub.maxMarks) * 100 : 0;
 
                       if (isQuickEditMode) {
                         return (
@@ -969,7 +1190,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                             <input
                               type="number"
                               min={0}
-                              max={100}
+                              max={sub.maxMarks}
                               value={currentScore}
                               onChange={(e) =>
                                 handleQuickScoreChange(g.id, sub.id, parseInt(e.target.value) || 0)
@@ -984,11 +1205,11 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                         <td key={sub.id} className="py-3 px-2.5 text-center font-mono whitespace-nowrap">
                           <span
                             className={`px-2 py-0.5 rounded text-xs font-bold ${
-                              currentScore >= 90
+                              pct >= 90
                                 ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-800/60'
-                                : currentScore >= 75
+                                : pct >= 75
                                 ? 'bg-indigo-950/60 text-indigo-300'
-                                : currentScore >= 40
+                                : currentScore >= sub.passMarks
                                 ? 'bg-slate-800 text-slate-300'
                                 : 'bg-rose-950/60 text-rose-400 border border-rose-800/60'
                             }`}
@@ -1121,7 +1342,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                 </select>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
                     Student Full Name *
@@ -1166,28 +1387,48 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                     ))}
                   </select>
                 </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                    Exam Term *
+                  </label>
+                  <select
+                    value={newExamTermId}
+                    onChange={(e) => setNewExamTermId(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white outline-none focus:border-indigo-500 cursor-pointer"
+                  >
+                    {examTerms.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name} ({t.academicYear})
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               {/* Subject Marks Grid */}
               <div>
                 <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">
-                  Subject Marks (Out of 100):
+                  Subject Marks (Configured Max Marks):
                 </label>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                   {subjects.map((sub) => (
                     <div key={sub.id} className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
-                      <span className="block text-[10px] text-slate-400 font-semibold truncate mb-1">
+                      <span className="block text-[10px] text-slate-400 font-semibold truncate" title={sub.name}>
                         {sub.name}
+                      </span>
+                      <span className="block text-[9px] text-slate-500 font-mono mb-1">
+                        Max: {sub.maxMarks} • Pass: {sub.passMarks}
                       </span>
                       <input
                         type="number"
                         min={0}
-                        max={100}
-                        value={newScores[sub.id] || 0}
+                        max={sub.maxMarks}
+                        value={newScores[sub.id] ?? 0}
                         onChange={(e) =>
                           setNewScores({
                             ...newScores,
-                            [sub.id]: Math.min(100, Math.max(0, parseInt(e.target.value) || 0)),
+                            [sub.id]: Math.min(sub.maxMarks, Math.max(0, parseInt(e.target.value) || 0)),
                           })
                         }
                         className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono font-bold text-center outline-none focus:border-indigo-500"
@@ -1256,8 +1497,8 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
         </div>
       )}
 
-      {/* EDIT STUDENT MARKS & SUBJECTS MODAL (CLICK-TO-EDIT) */}
-      {editingGrade && (
+      {/* EDIT STUDENT MARKS & SUBJECTS MODAL (CLICK-TO-EDIT, Admin & Teacher Only) */}
+      {isTeacherOrAdmin && editingGrade && (
         <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full p-6 text-slate-100 shadow-2xl max-h-[92vh] overflow-y-auto">
             <div className="flex items-start justify-between pb-4 border-b border-slate-800 mb-4">
@@ -1272,7 +1513,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                   <span>Student: {editingGrade.studentName}</span>
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Roll No: <span className="font-mono text-amber-300 font-bold">{editingGrade.rollNo}</span> • Term: {INITIAL_EXAM_TERMS.find((t) => t.id === editingGrade.examTermId)?.name || 'Term Exam'}
+                  Roll No: <span className="font-mono text-amber-300 font-bold">{editingGrade.rollNo}</span> • Term: {getTermDisplayName(editingGrade.examTermId)}
                 </p>
               </div>
 
@@ -1286,43 +1527,62 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
             </div>
 
             <form onSubmit={handleSaveGrade} className="space-y-4 text-xs">
+              {/* Exam Term Assignment */}
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Assigned Exam Term:</span>
+                </label>
+                <select
+                  value={editingGrade.examTermId}
+                  onChange={(e) => setEditingGrade({ ...editingGrade, examTermId: e.target.value })}
+                  className="px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white text-xs font-semibold outline-none focus:border-indigo-500 cursor-pointer"
+                >
+                  {examTerms.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name} ({t.academicYear})
+                    </option>
+                  ))}
+                  {!examTerms.some((t) => t.id === editingGrade.examTermId) && editingGrade.examTermId && (
+                    <option value={editingGrade.examTermId}>{editingGrade.examTermId}</option>
+                  )}
+                </select>
+              </div>
+
               {/* Existing Subjects & Marks */}
               <div>
                 <label className="block text-xs font-bold text-white uppercase tracking-wider mb-2.5">
-                  Subject Marks (Max 100 per subject):
+                  Subject Marks:
                 </label>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   {Object.entries(editingGrade.scores).map(([subKey, score]) => {
-                    const presetSub = subjects.find(s => s.id === subKey);
-                    const displayName = presetSub
-                      ? presetSub.name
-                      : subKey.replace('sub-custom-', '').replace(/-/g, ' ').toUpperCase();
-                    const isCustom = !presetSub;
+                    const meta = getSubjectMeta(subKey);
+                    const totalSubjectEntries = Object.keys(editingGrade.scores).length;
 
                     return (
                       <div key={subKey} className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-2">
                         <div className="truncate flex-1">
-                          <span className="font-semibold text-slate-200 block truncate">{displayName}</span>
-                          <span className="text-[10px] text-slate-500 font-mono">Max: 100 • Pass: 40</span>
+                          <span className="font-semibold text-slate-200 block truncate">{meta.name}</span>
+                          <span className="text-[10px] text-slate-500 font-mono">Max: {meta.maxMarks} • Pass: {meta.passMarks}</span>
                         </div>
 
                         <div className="flex items-center gap-1.5 shrink-0">
                           <input
                             type="number"
                             min={0}
-                            max={100}
+                            max={meta.maxMarks}
                             value={score}
                             onChange={(e) => handleScoreChange(subKey, parseInt(e.target.value) || 0)}
                             className="w-16 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono font-bold text-center outline-none focus:border-amber-400"
                           />
 
-                          {isCustom && (
+                          {totalSubjectEntries > 1 && (
                             <button
                               type="button"
                               onClick={() => handleRemoveSubjectFromEditingGrade(subKey)}
                               className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 rounded transition"
-                              title="Remove custom subject"
+                              title="Remove subject from marksheet"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
@@ -1333,6 +1593,25 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                   })}
                 </div>
               </div>
+
+              {/* Quick-add missing institutional subjects */}
+              {subjects.some((s) => !(s.id in editingGrade.scores)) && (
+                <div className="p-3 rounded-xl bg-indigo-950/25 border border-indigo-800/40 flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] font-bold text-indigo-300">Add Institutional Subject:</span>
+                  {subjects
+                    .filter((s) => !(s.id in editingGrade.scores))
+                    .map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => handleScoreChange(s.id, Math.round((s.maxMarks || 100) * 0.8))}
+                        className="px-2.5 py-1 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/30 text-indigo-200 text-[11px] font-semibold cursor-pointer transition"
+                      >
+                        + {s.name}
+                      </button>
+                    ))}
+                </div>
+              )}
 
               {/* Add Custom Subject Section */}
               <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
@@ -1468,7 +1747,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
               <div>
                 <span className="text-slate-500 block">Academic Assessment</span>
                 <strong className="text-slate-900">
-                  {INITIAL_EXAM_TERMS.find((t) => t.id === reportCardStudent.examTermId)?.name || 'Term Exam'}
+                  {getTermDisplayName(reportCardStudent.examTermId)}
                 </strong>
               </div>
             </div>
@@ -1486,14 +1765,16 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
               </thead>
               <tbody className="divide-y divide-slate-200">
                 {Object.entries(reportCardStudent.scores || {}).map(([subKey, scoreVal]) => {
+                  const meta = getSubjectMeta(subKey);
                   const score = Number(scoreVal || 0);
+                  const pct = meta.maxMarks > 0 ? (score / meta.maxMarks) * 100 : 0;
                   const subGrade =
-                    score >= 90 ? 'A+' : score >= 80 ? 'A' : score >= 70 ? 'B+' : score >= 60 ? 'B' : score >= 50 ? 'C' : score >= 40 ? 'D' : 'F';
+                    pct >= 90 ? 'A+' : pct >= 80 ? 'A' : pct >= 70 ? 'B+' : pct >= 60 ? 'B' : pct >= 50 ? 'C' : pct >= 40 ? 'D' : 'F';
                   return (
                     <tr key={subKey}>
-                      <td className="p-2.5 font-medium">{getSubjectDisplayName(subKey)}</td>
-                      <td className="p-2.5 text-center text-slate-600">100</td>
-                      <td className="p-2.5 text-center text-slate-600">40</td>
+                      <td className="p-2.5 font-medium">{meta.name}</td>
+                      <td className="p-2.5 text-center text-slate-600">{meta.maxMarks}</td>
+                      <td className="p-2.5 text-center text-slate-600">{meta.passMarks}</td>
                       <td className="p-2.5 text-center font-bold text-sm font-mono">{score}</td>
                       <td className="p-2.5 text-center font-bold text-indigo-700">{subGrade}</td>
                     </tr>
@@ -1576,7 +1857,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                     Consolidated Class Marksheet & Rank List
                   </h2>
                   <div className="text-xs text-slate-600">
-                    {selectedClass} • Term: {INITIAL_EXAM_TERMS.find((t) => t.id === selectedTerm)?.name || selectedTerm}
+                    {selectedClass} • Term: {getTermDisplayName(selectedTerm)}
                   </div>
                 </div>
               </div>
@@ -1648,6 +1929,378 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                 Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* MANAGE INSTITUTIONAL SUBJECTS MODAL (Admin & Teacher Only) */}
+      {isTeacherOrAdmin && isSubjectModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full p-6 text-slate-100 shadow-2xl max-h-[92vh] overflow-y-auto">
+            <div className="flex items-start justify-between pb-4 border-b border-slate-800 mb-4">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                    Faculty & Admin Curriculum Control
+                  </span>
+                </div>
+                <h2 className="text-lg font-bold font-serif text-white flex items-center gap-2">
+                  <SlidersHorizontal className="w-5 h-5 text-amber-400" />
+                  <span>Edit Institutional Subjects</span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Configure subject names, codes, maximum marks, and passing thresholds for all marksheets.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsSubjectModalOpen(false)}
+                className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {subjectFormError && (
+              <div className="mb-4 bg-rose-950/50 border border-rose-800/80 p-3 rounded-xl flex items-center gap-2 text-xs text-rose-300">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{subjectFormError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveSubjectsModal} className="space-y-4 text-xs">
+              <div className="space-y-2.5">
+                {subjectsDraft.map((sub, idx) => (
+                  <div
+                    key={sub.id}
+                    className="p-3 rounded-xl bg-slate-950 border border-slate-800 grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-center"
+                  >
+                    <div className="sm:col-span-5">
+                      <label className="block text-[10px] text-slate-500 uppercase font-bold mb-1">
+                        Subject Name
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={sub.name}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setSubjectsDraft((prev) =>
+                            prev.map((item, i) => (i === idx ? { ...item, name: val } : item))
+                          );
+                        }}
+                        className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white font-semibold outline-none focus:border-amber-400"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-[10px] text-slate-500 uppercase font-bold mb-1">
+                        Code
+                      </label>
+                      <input
+                        type="text"
+                        value={sub.code}
+                        onChange={(e) => {
+                          const val = e.target.value.toUpperCase();
+                          setSubjectsDraft((prev) =>
+                            prev.map((item, i) => (i === idx ? { ...item, code: val } : item))
+                          );
+                        }}
+                        className="w-full px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 font-mono outline-none focus:border-amber-400"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-[10px] text-slate-500 uppercase font-bold mb-1">
+                        Max Marks
+                      </label>
+                      <input
+                        type="number"
+                        min={10}
+                        max={500}
+                        value={sub.maxMarks}
+                        onChange={(e) => {
+                          const maxVal = Math.max(10, Math.min(500, parseInt(e.target.value) || 100));
+                          setSubjectsDraft((prev) =>
+                            prev.map((item, i) =>
+                              i === idx
+                                ? { ...item, maxMarks: maxVal, passMarks: Math.min(item.passMarks, maxVal) }
+                                : item
+                            )
+                          );
+                        }}
+                        className="w-full px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono text-center outline-none focus:border-amber-400"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-[10px] text-slate-500 uppercase font-bold mb-1">
+                        Pass Marks
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={sub.maxMarks}
+                        value={sub.passMarks}
+                        onChange={(e) => {
+                          const passVal = Math.max(1, Math.min(sub.maxMarks, parseInt(e.target.value) || 40));
+                          setSubjectsDraft((prev) =>
+                            prev.map((item, i) => (i === idx ? { ...item, passMarks: passVal } : item))
+                          );
+                        }}
+                        className="w-full px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono text-center outline-none focus:border-amber-400"
+                      />
+                    </div>
+                    <div className="sm:col-span-1 flex justify-end pt-4 sm:pt-4">
+                      <button
+                        type="button"
+                        disabled={subjectsDraft.length <= 1}
+                        onClick={() => setSubjectsDraft((prev) => prev.filter((_, i) => i !== idx))}
+                        className="p-1.5 rounded-lg bg-slate-900 hover:bg-rose-950/60 text-slate-400 hover:text-rose-400 border border-slate-800 disabled:opacity-30 cursor-pointer transition"
+                        title={subjectsDraft.length <= 1 ? 'At least 1 subject required' : 'Remove subject'}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Add New Subject Section */}
+              <div className="p-3.5 rounded-xl bg-slate-950/80 border border-dashed border-slate-700 space-y-2.5">
+                <div className="text-[11px] font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add New Institutional Subject</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+                  <input
+                    type="text"
+                    placeholder="Subject Name (e.g. Sanskrit)"
+                    value={newSubjectName}
+                    onChange={(e) => setNewSubjectName(e.target.value)}
+                    className="sm:col-span-5 px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white outline-none focus:border-indigo-500"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Code (e.g. SAN-101)"
+                    value={newSubjectCode}
+                    onChange={(e) => setNewSubjectCode(e.target.value.toUpperCase())}
+                    className="sm:col-span-2 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 font-mono outline-none focus:border-indigo-500"
+                  />
+                  <input
+                    type="number"
+                    min={10}
+                    max={500}
+                    placeholder="Max"
+                    value={newSubjectMax}
+                    onChange={(e) => setNewSubjectMax(parseInt(e.target.value) || 100)}
+                    className="sm:col-span-2 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono text-center outline-none focus:border-indigo-500"
+                  />
+                  <input
+                    type="number"
+                    min={1}
+                    max={newSubjectMax}
+                    placeholder="Pass"
+                    value={newSubjectPass}
+                    onChange={(e) => setNewSubjectPass(parseInt(e.target.value) || 40)}
+                    className="sm:col-span-1 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono text-center outline-none focus:border-indigo-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddSubjectDraft}
+                    className="sm:col-span-2 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold cursor-pointer transition"
+                  >
+                    + Add
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsSubjectModalOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingSubjects}
+                  className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold shadow-lg shadow-amber-500/25 cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>{isSavingSubjects ? 'Saving...' : 'Save Subjects to Firestore'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MANAGE EXAM TERMS MODAL (Admin & Teacher Only) */}
+      {isTeacherOrAdmin && isTermModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full p-6 text-slate-100 shadow-2xl max-h-[92vh] overflow-y-auto">
+            <div className="flex items-start justify-between pb-4 border-b border-slate-800 mb-4">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                    Faculty & Admin Exam Term Control
+                  </span>
+                </div>
+                <h2 className="text-lg font-bold font-serif text-white flex items-center gap-2">
+                  <Calendar className="w-5 h-5 text-indigo-400" />
+                  <span>Manage Exam Terms</span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Create, rename, or update academic examination terms and publication status.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsTermModalOpen(false)}
+                className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {termFormError && (
+              <div className="mb-4 bg-rose-950/50 border border-rose-800/80 p-3 rounded-xl flex items-center gap-2 text-xs text-rose-300">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{termFormError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveTermsModal} className="space-y-4 text-xs">
+              <div className="space-y-2.5">
+                {termsDraft.map((term, idx) => (
+                  <div
+                    key={term.id}
+                    className="p-3 rounded-xl bg-slate-950 border border-slate-800 grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-center"
+                  >
+                    <div className="sm:col-span-6">
+                      <label className="block text-[10px] text-slate-500 uppercase font-bold mb-1">
+                        Exam Term Name
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={term.name}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setTermsDraft((prev) =>
+                            prev.map((item, i) => (i === idx ? { ...item, name: val } : item))
+                          );
+                        }}
+                        className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white font-semibold outline-none focus:border-indigo-400"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-[10px] text-slate-500 uppercase font-bold mb-1">
+                        Session
+                      </label>
+                      <input
+                        type="text"
+                        value={term.academicYear}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setTermsDraft((prev) =>
+                            prev.map((item, i) => (i === idx ? { ...item, academicYear: val } : item))
+                          );
+                        }}
+                        className="w-full px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 font-mono outline-none focus:border-indigo-400"
+                      />
+                    </div>
+                    <div className="sm:col-span-3">
+                      <label className="block text-[10px] text-slate-500 uppercase font-bold mb-1">
+                        Status
+                      </label>
+                      <select
+                        value={term.status}
+                        onChange={(e) => {
+                          const val = e.target.value as ExamTerm['status'];
+                          setTermsDraft((prev) =>
+                            prev.map((item, i) => (i === idx ? { ...item, status: val } : item))
+                          );
+                        }}
+                        className="w-full px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white outline-none focus:border-indigo-400 cursor-pointer"
+                      >
+                        <option value="active">Active</option>
+                        <option value="upcoming">Upcoming</option>
+                        <option value="completed">Completed</option>
+                      </select>
+                    </div>
+                    <div className="sm:col-span-1 flex justify-end pt-4 sm:pt-4">
+                      <button
+                        type="button"
+                        disabled={termsDraft.length <= 1}
+                        onClick={() => setTermsDraft((prev) => prev.filter((_, i) => i !== idx))}
+                        className="p-1.5 rounded-lg bg-slate-900 hover:bg-rose-950/60 text-slate-400 hover:text-rose-400 border border-slate-800 disabled:opacity-30 cursor-pointer transition"
+                        title={termsDraft.length <= 1 ? 'At least 1 exam term required' : 'Remove exam term'}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Add New Exam Term Section */}
+              <div className="p-3.5 rounded-xl bg-slate-950/80 border border-dashed border-slate-700 space-y-2.5">
+                <div className="text-[11px] font-bold text-indigo-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add New Exam Term</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+                  <input
+                    type="text"
+                    placeholder="Exam Term Name (e.g. Unit Test 1)"
+                    value={newTermName}
+                    onChange={(e) => setNewTermName(e.target.value)}
+                    className="sm:col-span-6 px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white outline-none focus:border-indigo-500"
+                  />
+                  <input
+                    type="text"
+                    placeholder="2026-27"
+                    value={newTermYear}
+                    onChange={(e) => setNewTermYear(e.target.value)}
+                    className="sm:col-span-2 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 font-mono outline-none focus:border-indigo-500"
+                  />
+                  <select
+                    value={newTermStatus}
+                    onChange={(e) => setNewTermStatus(e.target.value as ExamTerm['status'])}
+                    className="sm:col-span-2 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white outline-none focus:border-indigo-500 cursor-pointer"
+                  >
+                    <option value="active">Active</option>
+                    <option value="upcoming">Upcoming</option>
+                    <option value="completed">Completed</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={handleAddTermDraft}
+                    className="sm:col-span-2 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold cursor-pointer transition"
+                  >
+                    + Add Term
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsTermModalOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingTerms}
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold shadow-lg shadow-indigo-600/30 cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>{isSavingTerms ? 'Saving...' : 'Save Exam Terms to Firestore'}</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

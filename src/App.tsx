@@ -21,6 +21,7 @@ import { PrivateVaultView } from './components/PrivateVaultView';
 import { DatabaseConsoleModal } from './components/DatabaseConsoleModal';
 
 import { sdbmsApi } from './services/api';
+import { INITIAL_SUBJECTS, INITIAL_EXAM_TERMS } from './data/sdbmsInitialData';
 import { playInstitutionalChime } from './utils/audio';
 import {
   User,
@@ -37,6 +38,8 @@ import {
   Lecture,
   Assessment,
   AssessmentSubmission,
+  AcademicSubject,
+  ExamTerm,
 } from './types';
 
 export const App: React.FC = () => {
@@ -100,6 +103,8 @@ export const App: React.FC = () => {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [lectures, setLectures] = useState<Lecture[]>([]);
   const [assessments, setAssessments] = useState<Assessment[]>([]);
+  const [subjects, setSubjects] = useState<AcademicSubject[]>(INITIAL_SUBJECTS);
+  const [examTerms, setExamTerms] = useState<ExamTerm[]>(INITIAL_EXAM_TERMS);
   const [activeChatGroupId, setActiveChatGroupId] = useState('grp-10a');
   const [welcomeBanner, setWelcomeBanner] = useState<WelcomeBannerConfig>({
     text: 'SDBMS v5.0 SECURE PORTAL ACTIVE • SRI SATHYA SAI ANANDAM • ZERO PAPER ARCHITECTURE',
@@ -127,6 +132,8 @@ export const App: React.FC = () => {
         loadedBanner,
         loadedLectures,
         loadedAssessments,
+        loadedSubjects,
+        loadedExamTerms,
       ] = await Promise.all([
         sdbmsApi.getUsers(),
         sdbmsApi.getGrades(),
@@ -139,6 +146,8 @@ export const App: React.FC = () => {
         sdbmsApi.getWelcomeBanner(),
         sdbmsApi.getLectures(),
         sdbmsApi.getAssessments(),
+        sdbmsApi.getSubjects(),
+        sdbmsApi.getExamTerms(),
       ]);
 
       setUsers(loadedUsers);
@@ -152,6 +161,8 @@ export const App: React.FC = () => {
       setWelcomeBanner(loadedBanner);
       setLectures(loadedLectures);
       setAssessments(loadedAssessments);
+      setSubjects(loadedSubjects);
+      setExamTerms(loadedExamTerms);
     } catch (err) {
       console.error('Data initialization error:', err);
     }
@@ -243,8 +254,32 @@ export const App: React.FC = () => {
   };
 
   const handleRefreshGrades = async () => {
-    const fresh = await sdbmsApi.getGrades();
-    setGrades(fresh);
+    const [freshGrades, freshSubjects, freshTerms] = await Promise.all([
+      sdbmsApi.getGrades(),
+      sdbmsApi.getSubjects(),
+      sdbmsApi.getExamTerms(),
+    ]);
+    setGrades(freshGrades);
+    setSubjects(freshSubjects);
+    setExamTerms(freshTerms);
+  };
+
+  const handleSaveSubjects = async (updatedSubjects: AcademicSubject[]) => {
+    const saved = await sdbmsApi.saveSubjects(updatedSubjects, currentUser || undefined);
+    setSubjects(saved);
+    const updatedLogs = await sdbmsApi.getAuditLogs();
+    setAuditLogs(updatedLogs);
+    handleSoundChime();
+    return saved;
+  };
+
+  const handleSaveExamTerms = async (updatedTerms: ExamTerm[]) => {
+    const saved = await sdbmsApi.saveExamTerms(updatedTerms, currentUser || undefined);
+    setExamTerms(saved);
+    const updatedLogs = await sdbmsApi.getAuditLogs();
+    setAuditLogs(updatedLogs);
+    handleSoundChime();
+    return saved;
   };
 
   // --- Handlers for Fee Transactions ---
@@ -524,6 +559,8 @@ export const App: React.FC = () => {
                   announcements={announcements}
                   auditLogs={auditLogs}
                   users={users}
+                  subjects={subjects}
+                  examTerms={examTerms}
                   onUpdateStudentBadges={handleUpdateStudentBadges}
                 />
               )}
@@ -577,6 +614,10 @@ export const App: React.FC = () => {
                   grades={grades}
                   users={users}
                   currentUser={currentUser}
+                  subjects={subjects}
+                  examTerms={examTerms}
+                  onSaveSubjects={handleSaveSubjects}
+                  onSaveExamTerms={handleSaveExamTerms}
                   onUpdateGrade={handleUpdateGrade}
                   onBulkUpdateGrades={handleBulkUpdateGrades}
                   onAddGrade={handleAddGrade}

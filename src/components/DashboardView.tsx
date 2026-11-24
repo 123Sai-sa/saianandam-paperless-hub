@@ -24,7 +24,17 @@ import {
   CalendarCheck,
   BookOpen,
 } from 'lucide-react';
-import { User, StudentGrade, FeeTransaction, Announcement, AuditLog, NavigationTab, ALL_INSTITUTIONAL_CLASSES } from '../types';
+import {
+  User,
+  StudentGrade,
+  FeeTransaction,
+  Announcement,
+  AuditLog,
+  NavigationTab,
+  ALL_INSTITUTIONAL_CLASSES,
+  AcademicSubject,
+  ExamTerm,
+} from '../types';
 import { INITIAL_EXAM_TERMS, INITIAL_SUBJECTS } from '../data/sdbmsInitialData';
 
 interface DashboardViewProps {
@@ -35,6 +45,8 @@ interface DashboardViewProps {
   announcements: Announcement[];
   auditLogs: AuditLog[];
   users?: User[];
+  subjects?: AcademicSubject[];
+  examTerms?: ExamTerm[];
   onUpdateStudentBadges?: (studentId: string, badges: string[]) => Promise<void>;
 }
 
@@ -46,6 +58,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   announcements,
   auditLogs,
   users = [],
+  subjects = INITIAL_SUBJECTS,
+  examTerms = INITIAL_EXAM_TERMS,
   onUpdateStudentBadges,
 }) => {
   const isTeacherOrAdmin = currentUser.role === 'teacher' || currentUser.role === 'admin';
@@ -97,15 +111,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const getTermName = (termId?: string) => {
     if (!termId) return 'Academic Assessment';
-    const found = INITIAL_EXAM_TERMS.find((t) => t.id === termId);
+    const found = examTerms.find((t) => t.id === termId);
     if (found) return found.name;
     if (termId === 'term-mid-2026') return 'Mid-Term / Half-Yearly (2026)';
     return termId.replace(/^term-/, '').toUpperCase();
   };
 
-  const getSubjectName = (subKey: string) => {
-    const preset = INITIAL_SUBJECTS.find((s) => s.id === subKey);
-    if (preset) return preset.name;
+  const getSubjectMeta = (subKey: string) => {
+    const preset = subjects.find((s) => s.id === subKey);
+    if (preset) {
+      return {
+        name: preset.name,
+        maxMarks: preset.maxMarks || 100,
+        passMarks: preset.passMarks || 40,
+      };
+    }
     const legacyMap: Record<string, string> = {
       sub_math: 'Mathematics',
       sub_eng: 'English Literature',
@@ -114,12 +134,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       sub_san: 'Sanskrit & Values',
       sub_yoga: 'Yoga & Wellness',
     };
-    if (legacyMap[subKey]) return legacyMap[subKey];
-    return subKey
-      .replace(/^sub-custom-/, '')
-      .replace(/^sub[-_]/, '')
-      .replace(/[-_]/g, ' ')
-      .replace(/\b\w/g, (c) => c.toUpperCase());
+    const name =
+      legacyMap[subKey] ||
+      subKey
+        .replace(/^sub-custom-/, '')
+        .replace(/^sub[-_]/, '')
+        .replace(/[-_]/g, ' ')
+        .replace(/\b\w/g, (c) => c.toUpperCase());
+    return { name, maxMarks: 100, passMarks: 40 };
   };
 
   // All marksheets belonging strictly to the currently logged-in student (sorted newest first, active term prioritized)
@@ -130,7 +152,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           const timeDiff =
             new Date(b.lastUpdated || 0).getTime() - new Date(a.lastUpdated || 0).getTime();
           if (timeDiff !== 0) return timeDiff;
-          return a.examTermId === 'term-half' ? -1 : 1;
+          return a.examTermId === (examTerms[0]?.id || 'term-half') ? -1 : 1;
         })
     : [];
 
@@ -142,18 +164,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Dynamic Overview Insights computed strictly from the student's marksheet
   const myMarksheetInsights = React.useMemo(() => {
     if (!myGrade) return null;
-    const scoreEntries = Object.entries(myGrade.scores || {}).map(([key, val]) => ({
-      key,
-      name: getSubjectName(key),
-      score: Number(val || 0),
-    }));
+    const scoreEntries = Object.entries(myGrade.scores || {}).map(([key, val]) => {
+      const meta = getSubjectMeta(key);
+      const score = Number(val || 0);
+      const pct = meta.maxMarks > 0 ? Math.round((score / meta.maxMarks) * 100) : 0;
+      return {
+        key,
+        name: meta.name,
+        score,
+        maxMarks: meta.maxMarks,
+        passMarks: meta.passMarks,
+        pct,
+      };
+    });
 
-    const sortedDesc = [...scoreEntries].sort((a, b) => b.score - a.score);
+    const sortedDesc = [...scoreEntries].sort((a, b) => b.pct - a.pct);
     const strongest = sortedDesc[0] || null;
     const focus = sortedDesc[sortedDesc.length - 1] || null;
-    const distinctionCount = scoreEntries.filter((s) => s.score >= 90).length;
-    const passedSubjects = scoreEntries.filter((s) => s.score >= 40);
-    const failedSubjects = scoreEntries.filter((s) => s.score < 40);
+    const distinctionCount = scoreEntries.filter((s) => s.pct >= 90).length;
+    const passedSubjects = scoreEntries.filter((s) => s.score >= s.passMarks);
+    const failedSubjects = scoreEntries.filter((s) => s.score < s.passMarks);
 
     let standingLabel = 'Merit Standing';
     let standingTone: 'emerald' | 'indigo' | 'amber' | 'rose' = 'indigo';
@@ -164,29 +194,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       standingTone = 'rose';
       const weakNames =
         failedSubjects.length > 0
-          ? failedSubjects.map((s) => `${s.name} (${s.score}%)`).join(', ')
+          ? failedSubjects.map((s) => `${s.name} (${s.score}/${s.maxMarks})`).join(', ')
           : focus
-          ? `${focus.name} (${focus.score}%)`
+          ? `${focus.name} (${focus.score}/${focus.maxMarks})`
           : 'core subjects';
-      standingSummary = `Your marksheet shows priority improvement needed in ${weakNames} to reach the 40% subject pass mark.`;
+      standingSummary = `Your marksheet shows priority improvement needed in ${weakNames} to reach the subject passing benchmark.`;
     } else if (myGrade.percentage >= 90) {
       standingLabel = 'Honors & Distinction';
       standingTone = 'emerald';
       standingSummary = strongest
-        ? `Outstanding ${myGrade.percentage}% aggregate led by ${strongest.name} (${strongest.score}/100) with ${distinctionCount} distinction${distinctionCount === 1 ? '' : 's'}.`
+        ? `Outstanding ${myGrade.percentage}% aggregate led by ${strongest.name} (${strongest.score}/${strongest.maxMarks}) with ${distinctionCount} distinction${distinctionCount === 1 ? '' : 's'}.`
         : `Outstanding ${myGrade.percentage}% aggregate across your evaluated subjects.`;
     } else if (myGrade.percentage >= 75) {
       standingLabel = 'Merit Standing';
       standingTone = 'indigo';
       standingSummary =
         strongest && focus
-          ? `Strong ${myGrade.percentage}% performance led by ${strongest.name} (${strongest.score}/100). Boosting ${focus.name} (${focus.score}/100) can lift you into A+ honors.`
+          ? `Strong ${myGrade.percentage}% performance led by ${strongest.name} (${strongest.score}/${strongest.maxMarks}). Boosting ${focus.name} (${focus.score}/${focus.maxMarks}) can lift you into A+ honors.`
           : `Consistent ${myGrade.percentage}% performance across evaluated subjects.`;
     } else {
       standingLabel = 'Steady Progress';
       standingTone = 'amber';
       standingSummary = focus
-        ? `Current aggregate is ${myGrade.percentage}% (${myGrade.grade}). Focused revision in ${focus.name} (${focus.score}/100) will raise your overall GPA.`
+        ? `Current aggregate is ${myGrade.percentage}% (${myGrade.grade}). Focused revision in ${focus.name} (${focus.score}/${focus.maxMarks}) will raise your overall GPA.`
         : `Current aggregate is ${myGrade.percentage}% (${myGrade.grade}).`;
     }
 
@@ -202,7 +232,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       standingSummary,
       termName: getTermName(myGrade.examTermId),
     };
-  }, [myGrade]);
+  }, [myGrade, subjects, examTerms]);
 
   // Collect student list for the Rank Board
   const studentUsers = users.filter((u) => u.role === 'student');
@@ -882,30 +912,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     </div>
                     {myMarksheetInsights.focus && (
                       <div className="text-[11px] px-2.5 py-1.5 rounded-lg bg-slate-950/60 border border-white/10 shrink-0">
-                        Focus Area: <strong>{myMarksheetInsights.focus.name}</strong> ({myMarksheetInsights.focus.score}/100)
+                        Focus Area: <strong>{myMarksheetInsights.focus.name}</strong> ({myMarksheetInsights.focus.score}/{myMarksheetInsights.focus.maxMarks})
                       </div>
                     )}
                   </div>
 
                   {/* Subject Score Breakdown (Dynamically reflects all subjects in marksheet) */}
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                    {myMarksheetInsights.scoreEntries.map(({ key, name, score }) => {
+                    {myMarksheetInsights.scoreEntries.map(({ key, name, score, maxMarks, pct }) => {
                       const subGrade =
-                        score >= 90 ? 'A+' : score >= 80 ? 'A' : score >= 70 ? 'B+' : score >= 60 ? 'B' : score >= 50 ? 'C' : score >= 40 ? 'D' : 'F';
+                        pct >= 90 ? 'A+' : pct >= 80 ? 'A' : pct >= 70 ? 'B+' : pct >= 60 ? 'B' : pct >= 50 ? 'C' : pct >= 40 ? 'D' : 'F';
                       const barColor =
-                        score >= 90
+                        pct >= 90
                           ? 'bg-emerald-500'
-                          : score >= 75
+                          : pct >= 75
                           ? 'bg-indigo-500'
-                          : score >= 40
+                          : pct >= 40
                           ? 'bg-amber-500'
                           : 'bg-rose-500';
                       const gradeTextColor =
-                        score >= 90
+                        pct >= 90
                           ? 'text-emerald-400'
-                          : score >= 75
+                          : pct >= 75
                           ? 'text-indigo-400'
-                          : score >= 40
+                          : pct >= 40
                           ? 'text-amber-400'
                           : 'text-rose-400';
 
@@ -921,12 +951,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           </div>
                           <div className="flex items-baseline justify-between mt-1">
                             <span className="text-xl font-black text-white">{score}</span>
-                            <span className="text-[10px] text-slate-400 font-bold">/ 100</span>
+                            <span className="text-[10px] text-slate-400 font-bold">/ {maxMarks}</span>
                           </div>
                           <div className="w-full bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden">
                             <div
                               className={`${barColor} h-full rounded-full transition-all duration-300`}
-                              style={{ width: `${Math.min(100, Math.max(0, score))}%` }}
+                              style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
                             />
                           </div>
                         </div>

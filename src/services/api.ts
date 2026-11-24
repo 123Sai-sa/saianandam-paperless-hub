@@ -17,6 +17,8 @@ import {
   VaultCredential,
   VaultDocument,
   AttendanceRecord,
+  AcademicSubject,
+  ExamTerm,
 } from '../types';
 import {
   INITIAL_USERS,
@@ -792,6 +794,106 @@ export const sdbmsApi = {
 
   setCaptchaEnabled(enabled: boolean): void {
     localStorage.setItem('sdbms_captcha_enabled', enabled ? 'true' : 'false');
+  },
+
+  // Configurable Institutional Subjects & Exam Terms (Admin & Teacher editable via Firestore)
+  async getSubjects(): Promise<AcademicSubject[]> {
+    try {
+      const docRef = doc(db, 'system_config', 'subjects_config');
+      const snap = await getDoc(docRef);
+      if (snap.exists() && Array.isArray(snap.data().items) && snap.data().items.length > 0) {
+        const items = snap.data().items as AcademicSubject[];
+        setStorageItem('subjects', items);
+        return items;
+      }
+      const initial = getStorageItem<AcademicSubject[]>('subjects', INITIAL_SUBJECTS);
+      setDoc(docRef, { id: 'subjects_config', items: initial, updatedAt: new Date().toISOString() }, { merge: true }).catch(() => {});
+      return initial;
+    } catch {
+      return getStorageItem<AcademicSubject[]>('subjects', INITIAL_SUBJECTS);
+    }
+  },
+
+  async saveSubjects(subjects: AcademicSubject[], actor?: User): Promise<AcademicSubject[]> {
+    const sanitized = subjects
+      .filter((s) => s.name.trim().length > 0)
+      .map((s, idx) => {
+        const maxMarks = Math.max(10, Math.min(500, Number(s.maxMarks) || 100));
+        const passMarks = Math.max(1, Math.min(maxMarks, Number(s.passMarks) || 40));
+        return {
+          id: s.id || `sub-${Date.now().toString(36)}-${idx}`,
+          name: s.name.trim(),
+          code: (s.code || s.name.trim().slice(0, 4).toUpperCase() + '-101').trim().toUpperCase(),
+          maxMarks,
+          passMarks,
+        };
+      });
+
+    setStorageItem('subjects', sanitized);
+    await writeDocToFirestore('system_config', 'subjects_config', {
+      id: 'subjects_config',
+      items: sanitized,
+      updatedAt: new Date().toISOString(),
+    });
+
+    this.addAuditLog({
+      actorId: actor?.id || 'admin',
+      actorName: actor?.fullName || 'Faculty / Administrator',
+      actorRole: actor?.role || 'admin',
+      eventType: 'SETTINGS_UPDATE',
+      details: `Updated institutional subjects list (${sanitized.length} subjects active).`,
+      ipAddress: '127.0.0.1 (Firestore Database)',
+      severity: 'info',
+    });
+
+    return sanitized;
+  },
+
+  async getExamTerms(): Promise<ExamTerm[]> {
+    try {
+      const docRef = doc(db, 'system_config', 'exam_terms_config');
+      const snap = await getDoc(docRef);
+      if (snap.exists() && Array.isArray(snap.data().items) && snap.data().items.length > 0) {
+        const items = snap.data().items as ExamTerm[];
+        setStorageItem('exam_terms', items);
+        return items;
+      }
+      const initial = getStorageItem<ExamTerm[]>('exam_terms', INITIAL_EXAM_TERMS);
+      setDoc(docRef, { id: 'exam_terms_config', items: initial, updatedAt: new Date().toISOString() }, { merge: true }).catch(() => {});
+      return initial;
+    } catch {
+      return getStorageItem<ExamTerm[]>('exam_terms', INITIAL_EXAM_TERMS);
+    }
+  },
+
+  async saveExamTerms(terms: ExamTerm[], actor?: User): Promise<ExamTerm[]> {
+    const sanitized = terms
+      .filter((t) => t.name.trim().length > 0)
+      .map((t, idx) => ({
+        id: t.id || `term-${Date.now().toString(36)}-${idx}`,
+        name: t.name.trim(),
+        academicYear: (t.academicYear || '2026-27').trim(),
+        status: t.status || 'active',
+      }));
+
+    setStorageItem('exam_terms', sanitized);
+    await writeDocToFirestore('system_config', 'exam_terms_config', {
+      id: 'exam_terms_config',
+      items: sanitized,
+      updatedAt: new Date().toISOString(),
+    });
+
+    this.addAuditLog({
+      actorId: actor?.id || 'admin',
+      actorName: actor?.fullName || 'Faculty / Administrator',
+      actorRole: actor?.role || 'admin',
+      eventType: 'SETTINGS_UPDATE',
+      details: `Updated academic exam terms (${sanitized.length} terms configured).`,
+      ipAddress: '127.0.0.1 (Firestore Database)',
+      severity: 'info',
+    });
+
+    return sanitized;
   },
 
   // Academics & Grades (Connected to Cloud Firestore Database)
@@ -1674,6 +1776,8 @@ export const sdbmsApi = {
     localStorage.removeItem('sdbms_lectures');
     localStorage.removeItem('sdbms_assessments');
     localStorage.removeItem('sdbms_attendance');
+    localStorage.removeItem('sdbms_subjects');
+    localStorage.removeItem('sdbms_exam_terms');
   },
 
   // ----------------------------------------------------
