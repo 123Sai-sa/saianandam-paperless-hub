@@ -90,6 +90,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
   // Status toggle feedback
   const [statusUpdatingId, setStatusUpdatingId] = useState<string | null>(null);
   const [statusSuccessMsg, setStatusSuccessMsg] = useState<string | null>(null);
+  const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<string | null>(null);
 
   // Register Counts
   const studentCount = users.filter((u) => u.role === 'student').length;
@@ -568,18 +569,36 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                       </button>
 
                       {user.role !== 'admin' && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (confirm(`Are you sure you want to permanently delete user ${user.fullName}?`)) {
-                              onDeleteUser(user.id);
-                            }
-                          }}
-                          className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-400 transition cursor-pointer"
-                          title="Delete User"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        confirmDeleteUserId === user.id ? (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onDeleteUser(user.id);
+                                setConfirmDeleteUserId(null);
+                              }}
+                              className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold cursor-pointer"
+                            >
+                              Delete
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteUserId(null)}
+                              className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteUserId(user.id)}
+                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-400 transition cursor-pointer"
+                            title="Delete User"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )
                       )}
                     </div>
                   </td>

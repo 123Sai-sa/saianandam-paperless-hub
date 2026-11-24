@@ -56,6 +56,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
   const [loading, setLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccessNotice, setSaveSuccessNotice] = useState<string | null>(null);
+  const [saveErrorNotice, setSaveErrorNotice] = useState<string | null>(null);
 
   // Student specific summary state
   const [studentSummary, setStudentSummary] = useState<{
@@ -134,7 +135,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
   // Load attendance data
   useEffect(() => {
     loadAttendance();
-  }, [selectedClass, selectedDate, currentUser]);
+  }, [selectedClass, selectedDate, currentUser, users]);
 
   const loadAttendance = async () => {
     setLoading(true);
@@ -159,9 +160,16 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
 
         // Populate with class students
         classStudents.forEach((st) => {
-          const match = existingRec?.records.find((r) => r.studentId === st.id);
+          const match = existingRec?.records.find(
+            (r) =>
+              r.studentId === st.id ||
+              (Boolean(st.rollNo) &&
+                Boolean(r.rollNo) &&
+                r.rollNo.trim().toLowerCase() === st.rollNo!.trim().toLowerCase()) ||
+              r.studentName.trim().toLowerCase() === st.fullName.trim().toLowerCase()
+          );
           if (match) {
-            newMap[st.id] = { ...match };
+            newMap[st.id] = { ...match, studentId: st.id };
           } else {
             newMap[st.id] = {
               studentId: st.id,
@@ -235,6 +243,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
   // Save attendance record to Firestore
   const handleSaveAttendance = async () => {
     setIsSaving(true);
+    setSaveErrorNotice(null);
     try {
       const recordsArray: AttendanceStudentEntry[] = Object.values(dailyEntries);
       const recordId = `att-${selectedDate}-${selectedClass.replace(/\s+/g, '')}`;
@@ -251,13 +260,13 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
 
       await sdbmsApi.saveAttendanceRecord(newRecord);
       setSaveSuccessNotice(
-        `✅ Attendance for ${selectedClass} on ${selectedDate} saved to Cloud Firestore!`
+        `Attendance for ${selectedClass} on ${selectedDate} saved to Cloud Firestore.`
       );
       if (onSoundChime) onSoundChime();
       setTimeout(() => setSaveSuccessNotice(null), 4000);
       await loadAttendance();
     } catch (err: any) {
-      alert(`Failed to save attendance: ${err.message || 'Network error'}`);
+      setSaveErrorNotice(`Failed to save attendance: ${err.message || 'Network error'}`);
     } finally {
       setIsSaving(false);
     }
@@ -367,7 +376,24 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
           <button
             type="button"
             onClick={() => setSaveSuccessNotice(null)}
-            className="text-emerald-400 hover:text-white text-xs font-bold px-1.5"
+            className="text-emerald-400 hover:text-white text-xs font-bold px-1.5 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Save Error Notice */}
+      {saveErrorNotice && (
+        <div className="p-3.5 rounded-xl bg-rose-950/70 border border-rose-800 text-xs text-rose-300 flex items-center justify-between gap-3 shadow-lg">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+            <span className="font-medium">{saveErrorNotice}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSaveErrorNotice(null)}
+            className="text-rose-400 hover:text-white text-xs font-bold px-1.5 cursor-pointer"
           >
             ✕
           </button>

@@ -115,6 +115,7 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
   const [quickScores, setQuickScores] = useState<Record<string, Record<string, number>>>({});
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const [confirmDeleteGradeId, setConfirmDeleteGradeId] = useState<string | null>(null);
 
   // Subject Manager Modal State (Admin & Teacher only)
   const [isSubjectModalOpen, setIsSubjectModalOpen] = useState(false);
@@ -1557,19 +1558,37 @@ export const AcademicsView: React.FC<AcademicsViewProps> = ({
                         )}
 
                         {currentUser.role === 'admin' && onDeleteGrade && (
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              if (confirm(`Remove marksheet record for ${g.studentName} (${g.classSec})?`)) {
-                                await onDeleteGrade(g.id);
-                                setSyncNotice(`Removed marksheet for ${g.studentName} from Firestore.`);
-                              }
-                            }}
-                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-950/60 text-slate-400 hover:text-rose-400 transition cursor-pointer"
-                            title="Delete Marksheet"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          confirmDeleteGradeId === g.id ? (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  await onDeleteGrade(g.id);
+                                  setConfirmDeleteGradeId(null);
+                                  setSyncNotice(`Removed marksheet for ${g.studentName} from Firestore.`);
+                                }}
+                                className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold cursor-pointer"
+                              >
+                                Confirm
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteGradeId(null)}
+                                className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteGradeId(g.id)}
+                              className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-950/60 text-slate-400 hover:text-rose-400 transition cursor-pointer"
+                              title="Delete Marksheet"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )
                         )}
                       </div>
                     </td>

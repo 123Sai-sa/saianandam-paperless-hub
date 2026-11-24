@@ -61,6 +61,8 @@ export const PrivateVaultView: React.FC<PrivateVaultViewProps> = ({ currentUser 
   const [selectedFile, setSelectedFile] = useState<{ name: string; size: string; dataUrl: string } | null>(null);
   const [docError, setDocError] = useState('');
   const [previewDoc, setPreviewDoc] = useState<VaultDocument | null>(null);
+  const [confirmDeleteCredId, setConfirmDeleteCredId] = useState<string | null>(null);
+  const [confirmDeleteDocId, setConfirmDeleteDocId] = useState<string | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -161,9 +163,9 @@ export const PrivateVaultView: React.FC<PrivateVaultViewProps> = ({ currentUser 
   };
 
   const handleDeleteCredential = async (id: string) => {
-    if (!window.confirm('Are you sure you want to permanently delete this credential?')) return;
     try {
       await sdbmsApi.deleteVaultCredential(id);
+      setConfirmDeleteCredId(null);
       loadVaultData();
     } catch (err) {
       console.error('Delete credential error:', err);
@@ -241,9 +243,9 @@ export const PrivateVaultView: React.FC<PrivateVaultViewProps> = ({ currentUser 
   };
 
   const handleDeleteDocument = async (id: string) => {
-    if (!window.confirm('Are you sure you want to delete this PDF document from your vault?')) return;
     try {
       await sdbmsApi.deleteVaultDocument(id);
+      setConfirmDeleteDocId(null);
       loadVaultData();
     } catch (err) {
       console.error('Delete document error:', err);
@@ -526,14 +528,33 @@ export const PrivateVaultView: React.FC<PrivateVaultViewProps> = ({ currentUser 
                         >
                           Edit
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteCredential(cred.id)}
-                          className="p-1 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-800 transition cursor-pointer"
-                          title="Delete Credential"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        {confirmDeleteCredId === cred.id ? (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteCredential(cred.id)}
+                              className="px-2 py-0.5 rounded-md bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold cursor-pointer"
+                            >
+                              Delete
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteCredId(null)}
+                              className="px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteCredId(cred.id)}
+                            className="p-1 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-800 transition cursor-pointer"
+                            title="Delete Credential"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -659,14 +680,33 @@ export const PrivateVaultView: React.FC<PrivateVaultViewProps> = ({ currentUser 
                       </a>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteDocument(doc.id)}
-                      className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-800 transition cursor-pointer"
-                      title="Delete PDF"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {confirmDeleteDocId === doc.id ? (
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteDocument(doc.id)}
+                          className="px-2 py-1 rounded-md bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold cursor-pointer"
+                        >
+                          Delete
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteDocId(null)}
+                          className="px-2 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteDocId(doc.id)}
+                        className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-800 transition cursor-pointer"
+                        title="Delete PDF"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}

@@ -265,7 +265,14 @@ export const Slidebar: React.FC<SlidebarProps> = ({
 
               {section.items.map((item) => {
                 const IconComponent = item.icon;
-                const isActive = activeTab === item.tab;
+                const isActive =
+                  activeTab === item.tab ||
+                  (activeTab === 'dashboard' && item.tab === 'overview') ||
+                  (activeTab === 'overview' && item.tab === 'dashboard') ||
+                  (activeTab === 'chat' && item.tab === 'forum') ||
+                  (activeTab === 'forum' && item.tab === 'chat') ||
+                  (activeTab === 'ai-advisor' && item.tab === 'ai-diagnostic') ||
+                  (activeTab === 'ai-diagnostic' && item.tab === 'ai-advisor');
 
                 return (
                   <button

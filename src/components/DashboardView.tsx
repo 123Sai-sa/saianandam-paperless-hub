@@ -88,6 +88,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [customBadgeInput, setCustomBadgeInput] = useState('');
   const [isSavingBadge, setIsSavingBadge] = useState(false);
   const [badgeSuccessMessage, setBadgeSuccessMessage] = useState<string | null>(null);
+  const [badgeErrorMessage, setBadgeErrorMessage] = useState<string | null>(null);
 
   const presetBadges = [
     '🌟 Math Star',
@@ -363,9 +364,40 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Filter students based on activeClass (Strictly locked to enrolled class for students)
   const matchedStudents = studentUsers.filter((s) => s.classSec === activeClass);
 
-  // Fallback representative students if class is newly provisioned with no students yet
+  // Fallback: derive students from real gradebook records for activeClass before using starter rows
+  const gradeDerivedStudents: User[] = React.useMemo(() => {
+    if (matchedStudents.length > 0) return [];
+    const seen = new Set<string>();
+    const derived: User[] = [];
+    grades
+      .filter((g) => g.classSec === activeClass)
+      .forEach((g, idx) => {
+        const key = (g.studentId || g.rollNo || g.studentName).toLowerCase().trim();
+        if (seen.has(key)) return;
+        seen.add(key);
+        derived.push({
+          id: g.studentId || `grd-stu-${idx}`,
+          fullName: g.studentName,
+          role: 'student',
+          username: (g.rollNo || g.studentName).toLowerCase().replace(/\s+/g, '_'),
+          email: `${(g.rollNo || `stu${idx}`).toLowerCase().replace(/[^a-z0-9]/g, '')}@sssas.edu`,
+          classSec: activeClass,
+          rollNo: g.rollNo,
+          status: 'active',
+          twoFactorEnabled: false,
+          lastLogin: g.lastUpdated || new Date().toISOString(),
+          createdAt: g.lastUpdated || new Date().toISOString(),
+          rank: g.rank,
+          badges: [],
+        });
+      });
+    return derived;
+  }, [matchedStudents.length, grades, activeClass]);
+
   const filteredStudents = matchedStudents.length > 0
     ? matchedStudents
+    : gradeDerivedStudents.length > 0
+    ? gradeDerivedStudents
     : [
         {
           id: `u-gen-${activeClass.replace(/\s+/g, '-').toLowerCase()}-01`,
@@ -450,54 +482,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       return b.calculatedPercentage - a.calculatedPercentage;
     });
 
-  const activeClassGradebookSummary = React.useMemo(() => {
-    const classGrades = grades.filter((g) => g.classSec === activeClass);
-    const avgPct = classGrades.length
-      ? (classGrades.reduce((sum, g) => sum + g.percentage, 0) / classGrades.length).toFixed(1)
-      : null;
-    const passCount = classGrades.filter((g) => g.status === 'pass').length;
-    const passRate = classGrades.length ? Math.round((passCount / classGrades.length) * 100) : null;
-    const topper = classGrades.length
-      ? [...classGrades].sort((a, b) => b.percentage - a.percentage)[0]
-      : null;
-
-    const subjectBreakdown = subjects.map((sub) => {
-      const relevant = classGrades.filter((g) => sub.id in (g.scores || {}));
-      const avgScore = relevant.length
-        ? Number((relevant.reduce((sum, g) => sum + Number(g.scores[sub.id] || 0), 0) / relevant.length).toFixed(1))
-        : null;
-      const avgSubPct =
-        avgScore !== null && sub.maxMarks > 0 ? Math.round((avgScore / sub.maxMarks) * 100) : 0;
-      return {
-        id: sub.id,
-        name: sub.name,
-        maxMarks: sub.maxMarks,
-        avgScore,
-        avgSubPct,
-      };
-    });
-
-    const totalAssessments = assessments.filter((a) => a.status !== 'draft').length;
-    const totalSubmissions = assessments.reduce((sum, a) => sum + (a.submissions?.length || 0), 0);
-    const gradedSubmissions = assessments.reduce(
-      (sum, a) => sum + (a.submissions?.filter((s) => s.status === 'graded').length || 0),
-      0
-    );
-    const publishedLectures = lectures.filter((l) => l.status !== 'draft').length;
-
-    return {
-      count: classGrades.length,
-      avgPct,
-      passCount,
-      passRate,
-      topper,
-      subjectBreakdown,
-      totalAssessments,
-      totalSubmissions,
-      gradedSubmissions,
-      publishedLectures,
-    };
-  }, [grades, activeClass, subjects, assessments, lectures]);
 
   const myClassRankIndex = isStudent
     ? rankedStudents.findIndex(
@@ -515,6 +499,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setActiveBadges(student.displayBadges || student.badges || []);
     setCustomBadgeInput('');
     setBadgeSuccessMessage(null);
+    setBadgeErrorMessage(null);
   };
 
   const handleTogglePresetBadge = (badge: string) => {
@@ -541,6 +526,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const handleSaveBadges = async () => {
     if (!editingStudent || !onUpdateStudentBadges) return;
     setIsSavingBadge(true);
+    setBadgeErrorMessage(null);
     try {
       await onUpdateStudentBadges(editingStudent.id, activeBadges);
       setBadgeSuccessMessage('Badges updated and synchronized with student profile!');
@@ -549,7 +535,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         setBadgeSuccessMessage(null);
       }, 1200);
     } catch (err: any) {
-      alert(err.message || 'Failed to update badges.');
+      setBadgeErrorMessage(err.message || 'Failed to update badges.');
     } finally {
       setIsSavingBadge(false);
     }
@@ -1254,97 +1240,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           )}
 
-          {/* Faculty / Admin / Accountant Real Gradebook & Institutional Operations Card */}
-          {!isStudent && (
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-                <div>
-                  <h2 className="text-base font-bold text-white flex items-center gap-2">
-                    <Award className="w-5 h-5 text-amber-400" />
-                    <span>
-                      Gradebook &amp; Academic Operations ({activeClass})
-                    </span>
-                  </h2>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    {activeClassGradebookSummary.count > 0
-                      ? `${activeClassGradebookSummary.count} marksheets evaluated • Avg ${activeClassGradebookSummary.avgPct}% • Pass Rate ${activeClassGradebookSummary.passRate}%${activeClassGradebookSummary.topper ? ` • Topper: ${activeClassGradebookSummary.topper.studentName} (${activeClassGradebookSummary.topper.percentage}%)` : ''}`
-                      : `No marksheets recorded for ${activeClass} yet. School-wide total: ${grades.length} marksheets across ${distinctGradeClassesCount} classes.`}
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => onNavigate('academics')}
-                  className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 cursor-pointer shrink-0"
-                >
-                  Open Gradebook →
-                </button>
-              </div>
-
-              {/* Subject Averages from Real Gradebook */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
-                {activeClassGradebookSummary.subjectBreakdown.map((sub) => (
-                  <div key={sub.id} className="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
-                    <div className="text-[11px] font-bold text-slate-400 truncate" title={sub.name}>
-                      {sub.name}
-                    </div>
-                    <div className="flex items-baseline justify-between mt-1">
-                      <span className="text-lg font-black text-white">
-                        {sub.avgScore !== null ? sub.avgScore : '--'}
-                      </span>
-                      <span className="text-[10px] text-slate-400 font-bold">/ {sub.maxMarks}</span>
-                    </div>
-                    <div className="w-full bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden">
-                      <div
-                        className="bg-indigo-500 h-full rounded-full transition-all duration-300"
-                        style={{ width: `${Math.min(100, Math.max(0, sub.avgSubPct))}%` }}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Live Attendance, Assessments, Lectures & Fee Summary */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
-                  <div className="text-[10px] font-bold uppercase text-slate-400">Attendance</div>
-                  <div className="text-sm font-black text-teal-400 mt-0.5">
-                    {campusAttendanceStats.rate !== null ? `${campusAttendanceStats.rate}%` : 'No Logs'}
-                  </div>
-                  <div className="text-[10px] text-slate-400">
-                    {campusAttendanceStats.presentEntries}/{campusAttendanceStats.totalEntries} marked
-                  </div>
-                </div>
-                <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
-                  <div className="text-[10px] font-bold uppercase text-slate-400">Assessments</div>
-                  <div className="text-sm font-black text-indigo-300 mt-0.5">
-                    {activeClassGradebookSummary.totalAssessments} Active
-                  </div>
-                  <div className="text-[10px] text-slate-400">
-                    {activeClassGradebookSummary.totalSubmissions} submissions ({activeClassGradebookSummary.gradedSubmissions} graded)
-                  </div>
-                </div>
-                <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
-                  <div className="text-[10px] font-bold uppercase text-slate-400">Lectures</div>
-                  <div className="text-sm font-black text-amber-300 mt-0.5">
-                    {activeClassGradebookSummary.publishedLectures} Published
-                  </div>
-                  <div className="text-[10px] text-slate-400">
-                    {subjects.length} subjects • {examTerms.length} terms
-                  </div>
-                </div>
-                <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
-                  <div className="text-[10px] font-bold uppercase text-slate-400">Fee Ledger</div>
-                  <div className="text-sm font-black text-emerald-400 mt-0.5">
-                    ₹ {totalCollections.toLocaleString()}
-                  </div>
-                  <div className="text-[10px] text-slate-400">
-                    {verifiedTxCount} verified • {pendingTxCount} pending
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* Institutional Circulars & Notices Preview */}
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
@@ -1514,6 +1409,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <X className="w-4 h-4" />
               </button>
             </div>
+
+            {badgeErrorMessage && (
+              <div className="mb-4 p-3 bg-rose-950/80 border border-rose-700/60 rounded-xl text-rose-300 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{badgeErrorMessage}</span>
+              </div>
+            )}
 
             {badgeSuccessMessage && (
               <div className="mb-4 p-3 bg-emerald-950/80 border border-emerald-700/60 rounded-xl text-emerald-300 text-xs flex items-center gap-2">

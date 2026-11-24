@@ -61,6 +61,10 @@ export const AssignmentsView: React.FC<AssignmentsViewProps> = ({
   const [isSubmitModalOpen, setIsSubmitModalOpen] = useState(false);
   const [isGradingModalOpen, setIsGradingModalOpen] = useState(false);
   const [selectedSubmission, setSelectedSubmission] = useState<{ assessment: Assessment; submission: AssessmentSubmission } | null>(null);
+  const [createFormError, setCreateFormError] = useState<string | null>(null);
+  const [submitFormError, setSubmitFormError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   // Student submission form
   const [submissionText, setSubmissionText] = useState('');
@@ -134,9 +138,10 @@ export const AssignmentsView: React.FC<AssignmentsViewProps> = ({
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formTitle.trim() || !formDescription.trim()) {
-      alert('Please fill in title and description.');
+      setCreateFormError('Please fill in both assessment title and description.');
       return;
     }
+    setCreateFormError(null);
 
     const instructionsArray = formInstructions
       .split('\n')
@@ -196,6 +201,7 @@ export const AssignmentsView: React.FC<AssignmentsViewProps> = ({
 
   const handleOpenStudentSubmit = (asm: Assessment) => {
     setActiveAssessment(asm);
+    setSubmitFormError(null);
     const existingSub = asm.submissions.find(s => s.studentId === currentUser.id);
     setSubmissionText(existingSub ? existingSub.submissionText : '');
     setSubmissionFileName(existingSub?.fileName || `${currentUser.fullName.replace(/\s+/g, '_')}_Solution.pdf`);
@@ -206,9 +212,10 @@ export const AssignmentsView: React.FC<AssignmentsViewProps> = ({
     e.preventDefault();
     if (!activeAssessment) return;
     if (!submissionText.trim()) {
-      alert('Please enter your written solution or response.');
+      setSubmitFormError('Please enter your written solution or response before submitting.');
       return;
     }
+    setSubmitFormError(null);
 
     await onSubmitAssessment(activeAssessment.id, {
       studentId: currentUser.id,
@@ -276,6 +283,22 @@ export const AssignmentsView: React.FC<AssignmentsViewProps> = ({
           </button>
         )}
       </div>
+
+      {actionNotice && (
+        <div className="p-3 rounded-xl bg-emerald-950/70 border border-emerald-700/60 text-emerald-300 text-xs flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{actionNotice}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActionNotice(null)}
+            className="text-emerald-400 hover:text-white font-bold px-1.5 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Filters and Status Tabs */}
       <div className="flex flex-col sm:flex-row gap-3 items-center justify-between">
@@ -410,12 +433,26 @@ export const AssignmentsView: React.FC<AssignmentsViewProps> = ({
                     </div>
                     <button
                       type="button"
-                      onClick={() => alert(`Downloading verified teacher problem sheet: ${asm.attachments![0].name}`)}
+                      onClick={() => {
+                        const fileName = asm.attachments![0].name;
+                        const content = `${asm.title}\nSubject: ${asm.subject} (${asm.classSec})\nFaculty: ${asm.teacherName}\n\nDescription:\n${asm.description}\n\nInstructions:\n${(asm.instructions || []).join('\n')}`;
+                        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = fileName.replace(/\.pdf$/i, '') + '.txt';
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                        setActionNotice(`Downloaded verified teacher handout for "${fileName}".`);
+                        setTimeout(() => setActionNotice(null), 3500);
+                      }}
                       className="px-2 py-0.5 rounded-lg bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-300 text-[10px] font-bold flex items-center gap-1 cursor-pointer"
                       title="Download attachment"
                     >
                       <Download className="w-3 h-3" />
-                      <span>PDF</span>
+                      <span>Download</span>
                     </button>
                   </div>
                 )}
@@ -500,18 +537,36 @@ export const AssignmentsView: React.FC<AssignmentsViewProps> = ({
                         <span>Review Submissions ({asm.submissions.length})</span>
                       </button>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (confirm(`Delete assessment "${asm.title}"?`)) {
-                            onDeleteAssessment(asm.id);
-                          }
-                        }}
-                        className="p-1.5 rounded-xl bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-400 transition cursor-pointer"
-                        title="Delete Assessment"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      {confirmDeleteId === asm.id ? (
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onDeleteAssessment(asm.id);
+                              setConfirmDeleteId(null);
+                            }}
+                            className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold cursor-pointer"
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteId(null)}
+                            className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteId(asm.id)}
+                          className="p-1.5 rounded-xl bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-400 transition cursor-pointer"
+                          title="Delete Assessment"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </>
                   )}
                 </div>
@@ -616,7 +671,20 @@ export const AssignmentsView: React.FC<AssignmentsViewProps> = ({
 
                         <button
                           type="button"
-                          onClick={() => alert(`Downloading verified teacher reference handout: ${att.name}`)}
+                          onClick={() => {
+                            const content = `${activeAssessment.title}\nSubject: ${activeAssessment.subject} (${activeAssessment.classSec})\nFaculty: ${activeAssessment.teacherName}\n\nDescription:\n${activeAssessment.description}\n\nInstructions:\n${(activeAssessment.instructions || []).join('\n')}`;
+                            const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = att.name.replace(/\.pdf$/i, '') + '.txt';
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                            URL.revokeObjectURL(url);
+                            setActionNotice(`Downloaded verified teacher reference handout "${att.name}".`);
+                            setTimeout(() => setActionNotice(null), 3500);
+                          }}
                           className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-sm"
                         >
                           <Download className="w-3.5 h-3.5" />
@@ -748,6 +816,12 @@ export const AssignmentsView: React.FC<AssignmentsViewProps> = ({
             </div>
 
             <form onSubmit={handleSaveStudentSubmission} className="space-y-4 text-xs">
+              {submitFormError && (
+                <div className="p-2.5 rounded-xl bg-rose-950/80 border border-rose-700/60 text-rose-300 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>{submitFormError}</span>
+                </div>
+              )}
               <div>
                 <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
                   Your Answer & Written Solutions
@@ -911,6 +985,12 @@ export const AssignmentsView: React.FC<AssignmentsViewProps> = ({
             </div>
 
             <form onSubmit={handleCreateSubmit} className="space-y-3 text-xs">
+              {createFormError && (
+                <div className="p-2.5 rounded-xl bg-rose-950/80 border border-rose-700/60 text-rose-300 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>{createFormError}</span>
+                </div>
+              )}
               <div>
                 <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
                   Assessment Title

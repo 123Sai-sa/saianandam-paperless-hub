@@ -205,6 +205,29 @@ export const App: React.FC = () => {
       if (targetUser) {
         sdbmsApi.setStoredSession(targetUser);
         setCurrentUser(targetUser);
+        const roleAllowedTabs: Record<NavigationTab, UserRole[] | null> = {
+          dashboard: null,
+          overview: null,
+          academics: null,
+          attendance: null,
+          lectures: null,
+          assignments: null,
+          announcements: null,
+          calendar: null,
+          chat: null,
+          forum: null,
+          'ai-advisor': null,
+          'ai-diagnostic': null,
+          'private-vault': null,
+          users: ['admin', 'teacher'],
+          fees: ['admin', 'accountant', 'student'],
+          audit: ['admin', 'accountant'],
+          settings: ['admin'],
+        };
+        const allowed = roleAllowedTabs[activeTab];
+        if (allowed && !allowed.includes(targetUser.role)) {
+          setActiveTab('dashboard');
+        }
         handleSoundChime();
       }
     } catch (err) {

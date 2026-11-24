@@ -99,6 +99,78 @@ function setStorageItem<T>(key: string, val: T): void {
   localStorage.setItem(`sdbms_${key}`, JSON.stringify(val));
 }
 
+function stripUndefinedDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((v) => stripUndefinedDeep(v)) as unknown as T;
+  }
+  if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
+    const cleaned: Record<string, any> = {};
+    for (const [k, v] of Object.entries(value as Record<string, any>)) {
+      if (v !== undefined) {
+        cleaned[k] = stripUndefinedDeep(v);
+      }
+    }
+    return cleaned as T;
+  }
+  return value;
+}
+
+function buildInitialStudentGrade(
+  user: User,
+  existingGrades: StudentGrade[],
+  remarks: string
+): StudentGrade {
+  const configuredSubjects = getStorageItem<AcademicSubject[]>('subjects', INITIAL_SUBJECTS);
+  const configuredTerms = getStorageItem<ExamTerm[]>('exam_terms', INITIAL_EXAM_TERMS);
+  const activeSubjects = configuredSubjects.length > 0 ? configuredSubjects : INITIAL_SUBJECTS;
+  const activeTerm = configuredTerms.find((t) => t.status === 'active') || configuredTerms[0] || INITIAL_EXAM_TERMS[0];
+
+  const scores: Record<string, number> = {};
+  let totalMarks = 0;
+  let maxPossible = 0;
+  activeSubjects.forEach((sub) => {
+    const max = sub.maxMarks || 100;
+    const starterScore = Math.round(max * 0.75);
+    scores[sub.id] = starterScore;
+    totalMarks += starterScore;
+    maxPossible += max;
+  });
+
+  const percentage = maxPossible > 0 ? Number(((totalMarks / maxPossible) * 100).toFixed(2)) : 0;
+  const gpa = Number((percentage / 10).toFixed(1));
+  const grade =
+    percentage >= 90
+      ? 'A+'
+      : percentage >= 80
+      ? 'A'
+      : percentage >= 70
+      ? 'B+'
+      : percentage >= 60
+      ? 'B'
+      : percentage >= 50
+      ? 'C'
+      : 'D';
+
+  return {
+    id: `grd-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 5)}`,
+    studentId: user.id,
+    studentName: user.fullName,
+    rollNo: user.rollNo || `R-${user.id.slice(-3)}`,
+    classSec: user.classSec || 'Class 8-A',
+    examTermId: activeTerm?.id || 'term-half',
+    scores,
+    totalMarks,
+    maxPossible,
+    percentage,
+    gpa,
+    grade,
+    status: percentage >= 40 ? 'pass' : 'fail',
+    rank: existingGrades.filter((g) => g.classSec === user.classSec).length + 1,
+    remarks,
+    lastUpdated: new Date().toISOString(),
+  };
+}
+
 // Firestore Collection Synchronizer with Seed Fallback
 async function syncCollection<T extends { id: string }>(
   collectionName: string,
@@ -132,7 +204,7 @@ async function seedCollectionToFirestore<T extends { id: string }>(
     const batch = writeBatch(db);
     for (const item of items.slice(0, 50)) {
       const docRef = doc(db, collectionName, item.id);
-      batch.set(docRef, item, { merge: true });
+      batch.set(docRef, stripUndefinedDeep(item), { merge: true });
     }
     await batch.commit();
   } catch (e) {
@@ -142,7 +214,7 @@ async function seedCollectionToFirestore<T extends { id: string }>(
 
 async function writeDocToFirestore(collectionName: string, docId: string, data: any): Promise<void> {
   try {
-    await setDoc(doc(db, collectionName, docId), data, { merge: true });
+    await setDoc(doc(db, collectionName, docId), stripUndefinedDeep(data), { merge: true });
   } catch (error) {
     console.warn(`Error writing to Firestore ${collectionName}/${docId}:`, error);
   }
@@ -410,36 +482,16 @@ export const sdbmsApi = {
     setStorageItem('users', updated);
     await writeDocToFirestore('users', newUser.id, newUser);
 
-    // If new user is a student, auto-register an initial gradebook record so they appear in classwise gradebook immediately
+    // If new user is a student, auto-register an initial gradebook record using configured subjects & term
     if (newUser.role === 'student' && newUser.classSec) {
       const grades = getStorageItem<StudentGrade[]>('grades', INITIAL_GRADES);
-      const existsInGrades = grades.some(g => g.studentId === newUser.id);
+      const existsInGrades = grades.some((g) => g.studentId === newUser.id);
       if (!existsInGrades) {
-        const newGrade: StudentGrade = {
-          id: `grd-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 5)}`,
-          studentId: newUser.id,
-          studentName: newUser.fullName,
-          rollNo: newUser.rollNo || `R-${newUser.id.slice(-3)}`,
-          classSec: newUser.classSec,
-          examTermId: 'term-half',
-          scores: {
-            'sub-math': 75,
-            'sub-phys': 75,
-            'sub-chem': 75,
-            'sub-eng': 75,
-            'sub-cs': 80,
-            'sub-soc': 80,
-          },
-          totalMarks: 460,
-          maxPossible: 600,
-          percentage: 76.67,
-          gpa: 7.7,
-          grade: 'B+',
-          status: 'pass',
-          rank: grades.filter(g => g.classSec === newUser.classSec).length + 1,
-          remarks: 'Newly registered student. Academic marksheet ledger activated.',
-          lastUpdated: new Date().toISOString(),
-        };
+        const newGrade = buildInitialStudentGrade(
+          newUser,
+          grades,
+          'Newly registered student. Academic marksheet ledger activated.'
+        );
         const updatedGrades = [newGrade, ...grades];
         setStorageItem('grades', updatedGrades);
         writeDocToFirestore('grades', newGrade.id, newGrade).catch(() => {});
@@ -510,36 +562,16 @@ export const sdbmsApi = {
     setStorageItem('users', updated);
     await writeDocToFirestore('users', newUser.id, newUser);
 
-    // If student, ensure gradebook entry
+    // If student, ensure gradebook entry using configured subjects & exam term
     if (newUser.role === 'student' && newUser.classSec) {
       const grades = getStorageItem<StudentGrade[]>('grades', INITIAL_GRADES);
-      const existsInGrades = grades.some(g => g.studentId === newUser.id);
+      const existsInGrades = grades.some((g) => g.studentId === newUser.id);
       if (!existsInGrades) {
-        const newGrade: StudentGrade = {
-          id: `grd-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 5)}`,
-          studentId: newUser.id,
-          studentName: newUser.fullName,
-          rollNo: newUser.rollNo || `R-${newUser.id.slice(-3)}`,
-          classSec: newUser.classSec,
-          examTermId: 'term-half',
-          scores: {
-            'sub-math': 75,
-            'sub-phys': 75,
-            'sub-chem': 75,
-            'sub-eng': 75,
-            'sub-cs': 80,
-            'sub-soc': 80,
-          },
-          totalMarks: 460,
-          maxPossible: 600,
-          percentage: 76.67,
-          gpa: 7.7,
-          grade: 'B+',
-          status: 'pass',
-          rank: grades.filter(g => g.classSec === newUser.classSec).length + 1,
-          remarks: 'Provisioned student record. Academic ledger active.',
-          lastUpdated: new Date().toISOString(),
-        };
+        const newGrade = buildInitialStudentGrade(
+          newUser,
+          grades,
+          'Provisioned student record. Academic ledger active.'
+        );
         const updatedGrades = [newGrade, ...grades];
         setStorageItem('grades', updatedGrades);
         writeDocToFirestore('grades', newGrade.id, newGrade).catch(() => {});
@@ -632,8 +664,12 @@ export const sdbmsApi = {
       email?: string;
     }
   ): Promise<User> {
-    const users = getStorageItem<User[]>('users', INITIAL_USERS);
-    const targetIndex = users.findIndex(u => u.id === userId);
+    let users = getStorageItem<User[]>('users', INITIAL_USERS);
+    let targetIndex = users.findIndex((u) => u.id === userId);
+    if (targetIndex === -1) {
+      users = await this.getUsers();
+      targetIndex = users.findIndex((u) => u.id === userId);
+    }
     if (targetIndex === -1) {
       throw new Error(`User with ID "${userId}" not found.`);
     }
@@ -681,25 +717,47 @@ export const sdbmsApi = {
     users[targetIndex] = updatedUser;
     setStorageItem('users', users);
 
-    // If ID changed, cascade to related records
+    // If ID changed, cascade to related records in localStorage & Firestore
     if (newId !== userId) {
       // 1. Cascading student grades
       const grades = getStorageItem<StudentGrade[]>('grades', INITIAL_GRADES);
-      const updatedGrades = grades.map(g => (g.studentId === userId ? { ...g, studentId: newId, rollNo: newRollNo || g.rollNo } : g));
+      const changedGrades: StudentGrade[] = [];
+      const updatedGrades = grades.map((g) => {
+        if (g.studentId === userId) {
+          const next = { ...g, studentId: newId, rollNo: newRollNo || g.rollNo };
+          changedGrades.push(next);
+          return next;
+        }
+        return g;
+      });
       setStorageItem('grades', updatedGrades);
+      changedGrades.forEach((g) => {
+        writeDocToFirestore('grades', g.id, g).catch(() => {});
+      });
 
       // 2. Cascading fee transactions
       const transactions = getStorageItem<FeeTransaction[]>('transactions', INITIAL_TRANSACTIONS);
-      const updatedTx = transactions.map(t => (t.studentId === userId ? { ...t, studentId: newId } : t));
+      const changedTx: FeeTransaction[] = [];
+      const updatedTx = transactions.map((t) => {
+        if (t.studentId === userId) {
+          const next = { ...t, studentId: newId };
+          changedTx.push(next);
+          return next;
+        }
+        return t;
+      });
       setStorageItem('transactions', updatedTx);
+      changedTx.forEach((t) => {
+        writeDocToFirestore('transactions', t.id, t).catch(() => {});
+      });
 
       // 3. Cascading vault credentials & documents
       const vaultCreds = getStorageItem<VaultCredential[]>('vault_credentials', []);
-      const updatedVaultCreds = vaultCreds.map(c => (c.userId === userId ? { ...c, userId: newId } : c));
+      const updatedVaultCreds = vaultCreds.map((c) => (c.userId === userId ? { ...c, userId: newId } : c));
       setStorageItem('vault_credentials', updatedVaultCreds);
 
       const vaultDocs = getStorageItem<VaultDocument[]>('vault_documents', []);
-      const updatedVaultDocs = vaultDocs.map(d => (d.userId === userId ? { ...d, userId: newId } : d));
+      const updatedVaultDocs = vaultDocs.map((d) => (d.userId === userId ? { ...d, userId: newId } : d));
       setStorageItem('vault_documents', updatedVaultDocs);
     }
 
@@ -983,7 +1041,7 @@ export const sdbmsApi = {
       const batch = writeBatch(db);
       for (const item of newGrades.slice(0, 50)) {
         const docRef = doc(db, 'grades', item.id);
-        batch.set(docRef, item, { merge: true });
+        batch.set(docRef, stripUndefinedDeep(item), { merge: true });
       }
       await batch.commit();
     } catch (err) {
