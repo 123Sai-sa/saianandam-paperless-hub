@@ -769,6 +769,17 @@ export const sdbmsApi = {
     localStorage.setItem('sdbms_global_theme', theme);
   },
 
+  // Security CAPTCHA configuration (Enabled by default for portal sign-in)
+  getCaptchaEnabled(): boolean {
+    const val = localStorage.getItem('sdbms_captcha_enabled');
+    if (val === 'false') return false;
+    return true;
+  },
+
+  setCaptchaEnabled(enabled: boolean): void {
+    localStorage.setItem('sdbms_captcha_enabled', enabled ? 'true' : 'false');
+  },
+
   // Academics & Grades (Connected to Cloud Firestore Database)
   async getGrades(): Promise<StudentGrade[]> {
     return await syncCollection<StudentGrade>('grades', 'grades', INITIAL_GRADES);

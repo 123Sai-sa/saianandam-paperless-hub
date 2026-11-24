@@ -18,6 +18,7 @@ import {
   EyeOff,
   Check,
   BookOpen,
+  RefreshCw,
 } from 'lucide-react';
 import { User, UserRole } from '../types';
 import { sdbmsApi } from '../services/api';
@@ -42,6 +43,51 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // CAPTCHA State
+  const [captchaEnabled] = useState<boolean>(() => sdbmsApi.getCaptchaEnabled());
+  const [captchaMode, setCaptchaMode] = useState<'code' | 'math'>('code');
+  const [captchaInput, setCaptchaInput] = useState('');
+
+  const createCaptchaChallenge = React.useCallback((mode: 'code' | 'math') => {
+    if (mode === 'math') {
+      const a = Math.floor(11 + Math.random() * 25);
+      const b = Math.floor(3 + Math.random() * 14);
+      const useAdd = Math.random() > 0.35;
+      const prompt = useAdd ? `${a} + ${b} = ?` : `${a} - ${b} = ?`;
+      const answer = String(useAdd ? a + b : a - b);
+      const glyphs = prompt.split('').map((ch, idx) => ({
+        char: ch,
+        rotate: Math.floor(Math.random() * 12) - 6,
+        yOffset: Math.floor(Math.random() * 6) - 3,
+        color: ['#fbbf24', '#a5b4fc', '#6ee7b7', '#f8fafc'][idx % 4],
+      }));
+      return { prompt, answer, glyphs, seed: Math.random() };
+    }
+    const charset = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 6; i++) {
+      code += charset[Math.floor(Math.random() * charset.length)];
+    }
+    const glyphs = code.split('').map((ch, idx) => ({
+      char: ch,
+      rotate: Math.floor(Math.random() * 34) - 17,
+      yOffset: Math.floor(Math.random() * 8) - 4,
+      color: ['#fbbf24', '#818cf8', '#34d399', '#f472b6', '#38bdf8', '#f8fafc'][idx % 6],
+    }));
+    return { prompt: code, answer: code, glyphs, seed: Math.random() };
+  }, []);
+
+  const [captchaChallenge, setCaptchaChallenge] = useState(() => createCaptchaChallenge('code'));
+
+  const handleRefreshCaptcha = (nextMode: 'code' | 'math' = captchaMode) => {
+    setCaptchaChallenge(createCaptchaChallenge(nextMode));
+    setCaptchaInput('');
+  };
+
+  const isCaptchaMatched =
+    !captchaEnabled ||
+    captchaInput.trim().toUpperCase() === captchaChallenge.answer.toUpperCase();
 
   // Registration State
   const [regFullName, setRegFullName] = useState('');
@@ -129,6 +175,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       return;
     }
 
+    if (captchaEnabled && !isCaptchaMatched) {
+      setError('Invalid CAPTCHA verification code. Please enter the characters shown and try again.');
+      handleRefreshCaptcha();
+      return;
+    }
+
     setLoading(true);
     setError('');
     try {
@@ -136,6 +188,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       onLoginSuccess(user);
     } catch (err: any) {
       setError(err.message || 'Authorization failed. Please verify credentials.');
+      if (captchaEnabled) {
+        handleRefreshCaptcha();
+      }
     } finally {
       setLoading(false);
     }
@@ -300,6 +355,141 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                   )}
                 </button>
               </div>
+
+              {/* Security CAPTCHA Verification Option */}
+              {captchaEnabled && (
+                <div className="p-3.5 rounded-xl bg-slate-900/75 border border-slate-800 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-300">
+                      <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Security CAPTCHA</span>
+                    </div>
+                    <div className="flex items-center gap-1 bg-slate-950 p-0.5 rounded-lg border border-slate-800 text-[10px]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCaptchaMode('code');
+                          handleRefreshCaptcha('code');
+                        }}
+                        className={`px-2 py-0.5 rounded-md font-bold transition cursor-pointer ${
+                          captchaMode === 'code'
+                            ? 'bg-indigo-600 text-white'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Text Code
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCaptchaMode('math');
+                          handleRefreshCaptcha('math');
+                        }}
+                        className={`px-2 py-0.5 rounded-md font-bold transition cursor-pointer ${
+                          captchaMode === 'math'
+                            ? 'bg-indigo-600 text-white'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Math
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <div
+                      className="flex-1 h-12 rounded-xl bg-slate-950 border border-slate-800 overflow-hidden flex items-center justify-center select-none relative"
+                      aria-label="CAPTCHA verification challenge"
+                    >
+                      <svg
+                        viewBox="0 0 220 48"
+                        className="w-full h-full"
+                        role="img"
+                        aria-label="Security CAPTCHA graphic"
+                      >
+                        <defs>
+                          <linearGradient id="captchaBg" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" stopColor="#020617" />
+                            <stop offset="100%" stopColor="#0f172a" />
+                          </linearGradient>
+                        </defs>
+                        <rect width="220" height="48" fill="url(#captchaBg)" />
+                        <path
+                          d={`M 6 ${12 + Math.round(captchaChallenge.seed * 18)} Q 110 ${38 - Math.round(captchaChallenge.seed * 24)}, 214 ${14 + Math.round(captchaChallenge.seed * 16)}`}
+                          stroke="#6366f1"
+                          strokeOpacity="0.45"
+                          strokeWidth="1.5"
+                          fill="none"
+                        />
+                        <path
+                          d={`M 8 ${36 - Math.round(captchaChallenge.seed * 16)} Q 108 ${8 + Math.round(captchaChallenge.seed * 20)}, 212 ${32 - Math.round(captchaChallenge.seed * 14)}`}
+                          stroke="#f59e0b"
+                          strokeOpacity="0.35"
+                          strokeWidth="1.2"
+                          fill="none"
+                        />
+                        {captchaChallenge.glyphs.map((g, idx) => {
+                          const total = captchaChallenge.glyphs.length;
+                          const spacing = Math.min(28, 176 / Math.max(total, 1));
+                          const startX = (220 - spacing * (total - 1)) / 2;
+                          const x = startX + idx * spacing;
+                          const y = 30 + g.yOffset;
+                          return (
+                            <text
+                              key={`${idx}-${g.char}`}
+                              x={x}
+                              y={y}
+                              fill={g.color}
+                              fontSize={captchaMode === 'math' ? '18' : '22'}
+                              fontWeight="800"
+                              fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
+                              textAnchor="middle"
+                              transform={`rotate(${g.rotate} ${x} ${y})`}
+                            >
+                              {g.char}
+                            </text>
+                          );
+                        })}
+                      </svg>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleRefreshCaptcha()}
+                      title="Refresh CAPTCHA"
+                      aria-label="Refresh CAPTCHA"
+                      className="h-12 px-3 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-amber-400 transition flex items-center justify-center cursor-pointer shrink-0"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="relative">
+                    <input
+                      type="text"
+                      placeholder={
+                        captchaMode === 'math'
+                          ? 'Enter calculated answer (e.g. 24)'
+                          : 'Enter the 6-character code above'
+                      }
+                      value={captchaInput}
+                      onChange={(e) => setCaptchaInput(e.target.value)}
+                      autoComplete="off"
+                      className={`w-full px-3.5 py-2.5 bg-slate-950 border rounded-xl text-white placeholder-slate-500 text-xs font-mono tracking-wider outline-none transition ${
+                        captchaInput && isCaptchaMatched
+                          ? 'border-emerald-500/70 focus:border-emerald-400 pr-24'
+                          : 'border-slate-800 focus:border-indigo-500'
+                      }`}
+                    />
+                    {captchaInput && isCaptchaMatched && (
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-emerald-400 flex items-center gap-1">
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Verified</span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             <button

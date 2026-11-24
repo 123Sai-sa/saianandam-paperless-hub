@@ -13,6 +13,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { WelcomeBannerConfig, User } from '../types';
+import { sdbmsApi } from '../services/api';
 
 interface SecOpsSettingsViewProps {
   welcomeBanner: WelcomeBannerConfig;
@@ -41,6 +42,13 @@ export const SecOpsSettingsView: React.FC<SecOpsSettingsViewProps> = ({
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetSuccess, setResetSuccess] = useState(false);
+  const [captchaEnabled, setCaptchaEnabled] = useState<boolean>(() => sdbmsApi.getCaptchaEnabled());
+
+  const handleToggleCaptcha = () => {
+    const next = !captchaEnabled;
+    setCaptchaEnabled(next);
+    sdbmsApi.setCaptchaEnabled(next);
+  };
 
   const handleSaveBanner = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -187,6 +195,26 @@ export const SecOpsSettingsView: React.FC<SecOpsSettingsViewProps> = ({
               <span className="px-2 py-0.5 rounded bg-indigo-950/60 text-indigo-400 border border-indigo-800 text-[10px] font-bold">
                 ACTIVE
               </span>
+            </div>
+
+            <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 flex justify-between items-center gap-3">
+              <div>
+                <div className="font-bold text-white">Sign-In CAPTCHA Verification</div>
+                <div className="text-[11px] text-slate-400">
+                  Require visual Text Code or Math CAPTCHA on institutional sign-in
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleToggleCaptcha}
+                className={`px-3 py-1.5 rounded-lg font-bold text-[10px] border transition cursor-pointer shrink-0 ${
+                  captchaEnabled
+                    ? 'bg-emerald-950/60 text-emerald-400 border-emerald-700 hover:bg-emerald-900/60'
+                    : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                }`}
+              >
+                {captchaEnabled ? 'ENABLED' : 'DISABLED'}
+              </button>
             </div>
 
             <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 flex justify-between items-center">
