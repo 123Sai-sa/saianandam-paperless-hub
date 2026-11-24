@@ -39,6 +39,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   // Sign In State
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -268,15 +269,36 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 />
               </div>
 
-              <div className="relative">
-                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4.5 h-4.5 text-slate-500" />
-                <input
-                  type="password"
-                  placeholder="Institutional Password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full pl-11 pr-4 py-3.5 bg-slate-900/70 border border-slate-800 rounded-xl text-white placeholder-slate-500 text-sm outline-none focus:border-indigo-500 focus:bg-indigo-950/20 transition duration-200 font-sans"
-                />
+              <div className="flex items-stretch gap-2">
+                <div className="relative flex-1">
+                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4.5 h-4.5 text-slate-500" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    placeholder="Institutional Password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full pl-11 pr-4 py-3.5 bg-slate-900/70 border border-slate-800 rounded-xl text-white placeholder-slate-500 text-sm outline-none focus:border-indigo-500 focus:bg-indigo-950/20 transition duration-200 font-sans"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  title={showPassword ? 'Hide password' : 'Show password'}
+                  className="px-3.5 rounded-xl bg-slate-900/70 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white transition duration-200 flex items-center gap-1.5 text-xs font-semibold cursor-pointer shrink-0"
+                >
+                  {showPassword ? (
+                    <>
+                      <EyeOff className="w-4 h-4 text-amber-400" />
+                      <span>Hide</span>
+                    </>
+                  ) : (
+                    <>
+                      <Eye className="w-4 h-4 text-slate-400" />
+                      <span>Show</span>
+                    </>
+                  )}
+                </button>
               </div>
             </div>
 
