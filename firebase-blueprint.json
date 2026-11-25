@@ -229,6 +229,31 @@
         "notes": { "type": "string", "maxLength": 1000 }
       },
       "required": ["id", "userId", "title", "fileName", "fileData", "uploadDate"]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Daily classwise student attendance register",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "date": { "type": "string", "maxLength": 32 },
+        "classSec": { "type": "string", "maxLength": 32 },
+        "markedBy": { "type": "string", "maxLength": 128 },
+        "markedById": { "type": "string", "maxLength": 128 },
+        "records": { "type": "array" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "date", "classSec", "records", "timestamp"]
+    },
+    "SystemConfig": {
+      "title": "SystemConfig",
+      "description": "Institutional configuration documents for subjects, exam terms, and welcome banner",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id"]
     }
   },
   "firestore": {
@@ -279,6 +304,14 @@
     "/vault_documents/{docId}": {
       "schema": { "$ref": "#/entities/VaultDocument" },
       "description": "User private PDF documents, admit cards, and certificates"
+    },
+    "/attendance/{attendanceId}": {
+      "schema": { "$ref": "#/entities/AttendanceRecord" },
+      "description": "Daily classroom attendance registers"
+    },
+    "/system_config/{configId}": {
+      "schema": { "$ref": "#/entities/SystemConfig" },
+      "description": "Subjects, exam terms, and welcome banner configuration"
     }
   }
 }

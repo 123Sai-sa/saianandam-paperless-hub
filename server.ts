@@ -1,15 +1,28 @@
 import express from 'express';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
-import { createServer as createViteServer } from 'vite';
 
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
+const isProduction =
+  process.env.NODE_ENV === 'production' ||
+  path.basename(typeof __filename !== 'undefined' ? __filename : '') === 'server.cjs';
 
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
 app.use(express.json({ limit: '10mb' }));
+
+// Baseline HTTP security headers (iframe-compatible)
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  next();
+});
 
 // Lazy Gemini client getter
 function getGeminiClient(): GoogleGenAI | null {
@@ -29,6 +42,7 @@ function getGeminiClient(): GoogleGenAI | null {
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
+    environment: isProduction ? 'production' : 'development',
     hasApiKey: Boolean(process.env.GEMINI_API_KEY),
     timestamp: new Date().toISOString(),
   });
@@ -533,25 +547,75 @@ Tasks:
   }
 });
 
-// Vite middleware & Static serving
+// Unmatched API endpoints return JSON 404 rather than SPA HTML
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: `API endpoint not found: ${req.method} ${req.originalUrl}` });
+});
+
+function resolveDistPath(): string {
+  const cwdDist = path.resolve(process.cwd(), 'dist');
+  if (fs.existsSync(path.join(cwdDist, 'index.html'))) {
+    return cwdDist;
+  }
+  const relativeDist = path.resolve(typeof __dirname !== 'undefined' ? __dirname : process.cwd(), '..', 'dist');
+  if (fs.existsSync(path.join(relativeDist, 'index.html'))) {
+    return relativeDist;
+  }
+  return cwdDist;
+}
+
+// Vite middleware (dev) & hardened static serving (production)
 async function startServer() {
-  if (process.env.NODE_ENV !== 'production') {
+  if (!isProduction) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
+    const distPath = resolveDistPath();
+    const indexHtmlPath = path.join(distPath, 'index.html');
+
+    app.use(
+      '/assets',
+      express.static(path.join(distPath, 'assets'), {
+        maxAge: '1y',
+        immutable: true,
+        fallthrough: false,
+      })
+    );
+
+    app.use(
+      express.static(distPath, {
+        index: false,
+        maxAge: '1h',
+      })
+    );
+
     app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+      if (!fs.existsSync(indexHtmlPath)) {
+        return res.status(503).send('Application build not found. Run "npm run build" before starting production server.');
+      }
+      res.setHeader('Cache-Control', 'no-cache');
+      res.sendFile(indexHtmlPath);
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Reduce Paper Demand Server running at http://localhost:${PORT}`);
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Sri Sathya Sai Hostel & School Management Server running on http://0.0.0.0:${PORT} (${isProduction ? 'production' : 'development'})`);
   });
+
+  const shutdown = (signal: string) => {
+    console.log(`Received ${signal}, shutting down server gracefully...`);
+    server.close(() => {
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(0), 5000).unref();
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 startServer();
